@@ -116,19 +116,49 @@ end
 -- The live party_buffs table is keyed by NUMBER for ME/P1-P5 and by the string
 -- 'A' for the area slot; the wire is strings for both.
 --
--- `default_on` mirrors two different real readers of this same party_buffs
--- table: an ability-target row (Buffs) is opt-in, so an unset slot reads off
--- (raw == true); a target-audience row (Sleep Removal, Group/AOE Targets) is
--- opt-out -- make_group_filter in heal.lua and is_wake_allowed in
--- status_removal.lua both read an unset slot as included (raw ~= false), so a
--- web-only user who never toggled anything sees the same "everyone" the addon
--- is actually acting on, not an all-unchecked row.
-local function target_values(env, name, slots, default_on)
-    local live = (env.party_buffs or {})[name] or {}
+-- `mode` picks which of three real readers of this same party_buffs table a
+-- row mirrors. They disagree on what an *unset slot* means, and one of them
+-- also disagrees on what an *entirely absent sub-table* means, so a single
+-- boolean cannot express all three -- hence a mode string instead:
+--
+--   nil (default)   -- a plain buff/debuff target row (Buffs, Debuff Removal).
+--                       No real reader opts these in for you; unset is OFF
+--                       whether or not the sub-table exists.
+--   'group_optout'  -- heal_group / heal_aoe_group. make_group_filter in
+--                       lib/actions/heal.lua returns
+--                       `not (targets ~= nil and targets[key] == false)`:
+--                       a slot is ON unless its OWN key is explicitly false --
+--                       the sub-table's existence never matters. KEY-level
+--                       opt-out.
+--   'table_optin'   -- wake (Sleep Removal). is_wake_allowed in
+--                       lib/actions/status_removal.lua (~line 526) returns
+--                       true for every slot when party_buffs.wake is
+--                       entirely absent, but once that sub-table exists at
+--                       all, only a slot explicitly set to true stays on --
+--                       an unset slot in a *present* table is OFF. TABLE-level
+--                       opt-in: the absent/present distinction on the whole
+--                       sub-table, not just on one slot, is what flips the
+--                       default, so it must be read without an `or {}`
+--                       fallback that would erase that distinction.
+local function target_values(env, name, slots, mode)
+    -- Deliberately no `or {}` here: for 'table_optin', "sub-table absent"
+    -- (live == nil) and "sub-table present but this slot absent" are
+    -- different states, and collapsing them with a fallback table would
+    -- make both read as nil downstream, same as the bug this fixes.
+    local live = env.party_buffs and env.party_buffs[name]
     local out = {}
     for _, slot in ipairs(slots) do
-        local raw = (slot == 'A') and live['A'] or live[tonumber(slot)]
-        out[slot] = default_on and (raw ~= false) or (raw == true)
+        local raw
+        if live then
+            raw = (slot == 'A') and live['A'] or live[tonumber(slot)]
+        end
+        if mode == 'group_optout' then
+            out[slot] = raw ~= false
+        elseif mode == 'table_optin' then
+            out[slot] = (live == nil) or (raw == true)
+        else
+            out[slot] = raw == true
+        end
     end
     return out
 end
@@ -321,7 +351,7 @@ function schema.build(job_def, settings, env)
         if has_non_self_heal(abilities.heal) then
             local slots = target_slots(nil, env)
             controls[#controls + 1] = { t = 'targets', name = 'heal_group', label = 'Group Targets',
-                group = false, slots = slots, value = target_values(env, 'heal_group', slots, true) }
+                group = false, slots = slots, value = target_values(env, 'heal_group', slots, 'group_optout') }
         end
         emit_checks(controls, job_def, abilities.heal, settings, env)
         if any_usable(abilities.critical, env) then
@@ -342,7 +372,7 @@ function schema.build(job_def, settings, env)
         do
             local slots = target_slots(nil, env)
             controls[#controls + 1] = { t = 'targets', name = 'heal_aoe_group', label = 'AOE Targets',
-                group = false, slots = slots, value = target_values(env, 'heal_aoe_group', slots, true) }
+                group = false, slots = slots, value = target_values(env, 'heal_aoe_group', slots, 'group_optout') }
         end
         emit_checks(controls, job_def, abilities.heal_aoe, settings, env)
         add_section(sections, settings, 'AOE Healing', 'heal_aoe_enabled', false, controls)
@@ -368,7 +398,7 @@ function schema.build(job_def, settings, env)
         for i = 1, math.min((env.party_size or 1) - 1, 5) do slots[#slots + 1] = tostring(i) end
         add_section(sections, settings, 'Sleep Removal', 'wake_enabled', false, {
             { t = 'targets', name = 'wake', label = 'Sleep Targets', group = false,
-              slots = slots, value = target_values(env, 'wake', slots, true) },
+              slots = slots, value = target_values(env, 'wake', slots, 'table_optin') },
         })
     end
 
@@ -531,13 +561,16 @@ function schema.build(job_def, settings, env)
         -- job change. Persisted functional settings, so the gear panel owns them.
         check('pianissimo_fast_casting', 'Pianissimo Fast Casting', settings.pianissimo_fast_casting),
         check('cast_with_1_shadow', 'Cast with 1 Shadow', settings.cast_with_1_shadow),
-        check('afk_enabled', 'AFK Sleep', settings.afk_enabled ~= false),
-        slider('afk_timeout', 'AFK Timeout (seconds)', settings.afk_timeout or 600, 60, 3600),
+        -- Potency/duration row, then AFK Sleep, then UI Opacity: panel.lua
+        -- draws them in exactly this order (lines 488-562), not the order
+        -- these settings were added to the addon.
         slider('cure_potency', 'Cure Potency +%', settings.cure_potency or 0, 0, 100),
         slider('waltz_potency', 'Waltz Potency +%', settings.waltz_potency or 0, 0, 100),
         -- Song Duration (BRD): 0 = memory-based recast (default), >0 = manual
         -- song timers. See lib/actions/buff.lua.
         slider('song_duration', 'Song Duration (s)', settings.song_duration or 0, 0, 999),
+        check('afk_enabled', 'AFK Sleep', settings.afk_enabled ~= false),
+        slider('afk_timeout', 'AFK Timeout (seconds)', settings.afk_timeout or 600, 60, 3600),
         slider('ui_opacity', 'UI Opacity', settings.ui_opacity or 100, 1, 100),
         check('load_stopped', 'Load stopped', settings.load_stopped),
         check('stop_after_zone', 'Stop after zone', settings.stop_after_zone),

@@ -179,6 +179,9 @@ assert(idx.ability['Cure V'] == nil, 'an out-of-level ability must not be settab
 -- Finding 1: Group/AOE Healing target rows (ui.render_heal_group_selection) --
 -- config.lua:1130/1162 draw a Group/AOE Targets row inside these sections;
 -- ME/P1-P5 default ON (state[key] ~= false in render_heal_group_selection).
+-- This is KEY-level opt-out (schema.lua mode 'group_optout'): a slot is ON
+-- unless ITS OWN key is explicitly false -- whether the sub-table exists at
+-- all never matters. Contrast with wake below, which is TABLE-level opt-in.
 local heal_targets = find_control(heal, function(c) return c.t == 'targets' and c.name == 'heal_group' end)
 assert(heal_targets, 'Group Healing must have a heal_group targets row')
 assert(heal_targets.label == 'Group Targets', 'Group Targets row mislabeled')
@@ -200,10 +203,28 @@ assert(self_only_heal, 'Group Healing section still shows for self-only heals')
 assert(not find_control(self_only_heal, function(c) return c.name == 'heal_group' end),
     'Group Targets must hide when every heal is self-only')
 
--- Finding 2: Sleep Removal targets default ON, not off -----------------------
--- status_removal.lua treats a wholly-absent wake table as "allow every
--- target"; a web-only user (who never opened the in-game panel, so
--- env.party_buffs has no 'wake' entry at all) must see the same thing.
+-- An explicit false turns off only that slot; make_group_filter never looks at
+-- whether the sub-table exists, so an unset sibling stays ON even though
+-- party_buffs.heal_group is now a non-empty table.
+local heal_group_off = find_control(
+    find_section(schema.build(job_def(), {}, env({ party_buffs = { heal_group = { [1] = false } } })), 'heal_enabled'),
+    function(c) return c.name == 'heal_group' end)
+assert(heal_group_off.value['0'] == true and heal_group_off.value['1'] == false and heal_group_off.value['2'] == true,
+    'heal_group: an explicit false turns off only that slot; unset siblings stay ON')
+
+local aoe_group_off = find_control(
+    find_section(schema.build(job_def(), {}, env({ party_buffs = { heal_aoe_group = { [1] = false } } })), 'heal_aoe_enabled'),
+    function(c) return c.name == 'heal_aoe_group' end)
+assert(aoe_group_off.value['0'] == true and aoe_group_off.value['1'] == false and aoe_group_off.value['2'] == true,
+    'heal_aoe_group: an explicit false turns off only that slot; unset siblings stay ON')
+
+-- Finding 2 (fix pass 2): Sleep Removal is TABLE-level opt-in, not key-level
+-- opt-out -- is_wake_allowed in lib/actions/status_removal.lua (~line 526):
+--   if not wake_targets then return true end   -- sub-table absent: all ON
+--   return wake_targets[key] == true            -- sub-table present: must be true
+-- "Sub-table absent" and "sub-table present but this slot absent" are
+-- different outcomes (all ON vs. this slot OFF); schema.lua's 'table_optin'
+-- mode must tell them apart rather than collapsing both to nil via `or {}`.
 local function wake_job_def()
     local jd = job_def()
     jd.abilities.heal[1].wakes = true
@@ -212,17 +233,30 @@ end
 local wake_built = schema.build(wake_job_def(), {}, env())
 local wake_section = find_section(wake_built, 'wake_enabled')
 assert(wake_section, 'Sleep Removal must show when a heal ability wakes')
+
+-- Case 1: sub-table entirely absent -- every slot ON.
 local wake_row = find_control(wake_section, function(c) return c.name == 'wake' end)
 assert(wake_row, 'Sleep Removal targets row missing')
 assert(wake_row.value['1'] == true and wake_row.value['2'] == true,
     'Sleep Removal targets must default ON when party_buffs.wake is entirely unset')
 
--- An explicit false still turns a target off; unset siblings stay on.
+-- Case 2: sub-table present with only slot 1 explicitly true -- slot 2, which
+-- has no entry of its own, must read OFF now that the table exists at all.
+-- This is the exact repro from the finding: a party member with no entry in
+-- a non-empty wake table is silently OFF in game, and the schema must agree.
+local wake_partial_row = find_control(
+    find_section(schema.build(wake_job_def(), {}, env({ party_buffs = { wake = { [1] = true } } })), 'wake_enabled'),
+    function(c) return c.name == 'wake' end)
+assert(wake_partial_row.value['1'] == true and wake_partial_row.value['2'] == false,
+    'wake: once the sub-table exists, a slot with no entry of its own is OFF')
+
+-- Case 3: sub-table present with slot 1 explicitly false -- OFF, and slot 2
+-- (unset, same non-empty table) is OFF too, unlike heal_group/heal_aoe_group above.
 local wake_off_row = find_control(
     find_section(schema.build(wake_job_def(), {}, env({ party_buffs = { wake = { [1] = false } } })), 'wake_enabled'),
     function(c) return c.name == 'wake' end)
-assert(wake_off_row.value['1'] == false and wake_off_row.value['2'] == true,
-    'an explicit false target is honoured while unset ones stay on')
+assert(wake_off_row.value['1'] == false and wake_off_row.value['2'] == false,
+    'wake: an explicitly false slot is OFF, and an unset sibling is OFF too once the table exists')
 
 -- Finding 3: Pianissimo/1 Shadow/Song Duration globals ------------------------
 -- panel.lua draws all three unconditionally (lines 467-516); they are
@@ -235,23 +269,31 @@ local song = find_global(built, 'song_duration')
 assert(song and song.t == 'slider' and song.min == 0 and song.max == 999 and song.value == 0,
     'Song Duration (s) missing or has the wrong range/default')
 
--- Order matches the panel: the two checkboxes right after Hold AOE for Group,
--- Song Duration right after Waltz Potency.
+-- Order matches the panel exactly (panel.lua:440-562): Multisend Follow, Hold
+-- AOE for Group, Pianissimo Fast Casting, Cast with 1 Shadow, then the
+-- potency/duration row (Cure Potency, Waltz Potency, Song Duration), THEN AFK
+-- Sleep and its Timeout, then UI Opacity. Pin the whole relative order (not
+-- just local adjacency) -- an adjacency-only check would still pass if the
+-- AFK pair and the potency block were swapped as whole blocks.
 local function global_index(b, key)
     for i, c in ipairs(b.globals) do
         if c.key == key then return i end
     end
     return nil
 end
-local i_hold, i_pian, i_shadow, i_afk =
-    global_index(built, 'hold_aoe_for_group'), global_index(built, 'pianissimo_fast_casting'),
-    global_index(built, 'cast_with_1_shadow'), global_index(built, 'afk_enabled')
-assert(i_pian == i_hold + 1 and i_shadow == i_pian + 1 and i_afk == i_shadow + 1,
-    'Pianissimo Fast Casting/Cast with 1 Shadow must sit between Hold AOE for Group and AFK Sleep')
-local i_waltz, i_song, i_opacity =
-    global_index(built, 'waltz_potency'), global_index(built, 'song_duration'), global_index(built, 'ui_opacity')
-assert(i_song == i_waltz + 1 and i_opacity == i_song + 1,
-    'Song Duration must sit between Waltz Potency and UI Opacity')
+local panel_order_keys = {
+    'multisend_follow', 'hold_aoe_for_group', 'pianissimo_fast_casting', 'cast_with_1_shadow',
+    'cure_potency', 'waltz_potency', 'song_duration', 'afk_enabled', 'afk_timeout', 'ui_opacity',
+}
+local prev_key, prev_i = nil, nil
+for _, key in ipairs(panel_order_keys) do
+    local i = global_index(built, key)
+    assert(i, key .. ' missing from globals')
+    if prev_i then
+        assert(i > prev_i, key .. ' must come after ' .. prev_key .. ', matching panel.lua order')
+    end
+    prev_key, prev_i = key, i
+end
 
 -- Finding 5: party_options must use the real player name, never 'ME' ---------
 -- render_party_dropdown inserts common.get_party_member_name(0); a saved
