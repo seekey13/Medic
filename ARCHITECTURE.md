@@ -22,9 +22,11 @@ lib/
     afk.lua                 AFK Sleep dead-man's switch (gates the tick after a stillness timeout)
     automation.lua          Priority-based action selection engine
     common.lua              Shared utilities (logging, party, buffs, commands)
+    json.lua                JSON encoder (one direction: the web UI snapshot)
     parse_packets.lua       Raw-packet parsing (action packet 0x028)
     party_share.lua         Shared party list (publishes own party, auto-tracks every other session's)
     targets.lua             FFXI target-resolution helpers (from Ashita)
+    webui.lua               Web UI bridge (/sk webui): snapshot out, requests in
   actions/
     buff.lua                Buff maintenance (self + party, groups, Pianissimo)
     follow.lua              Opt-in leader following (/follow past follow_distance)
@@ -64,6 +66,7 @@ lib/
     components.lua          Reusable imgui components & constants
     config.lua              Configuration window orchestration
     panel.lua               Debug info panel
+    schema.lua              The config window as data (drives the web UI, validates its edits)
     tooltips.lua            Contextual hover-help text for config UI
 ```
 

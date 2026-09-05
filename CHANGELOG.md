@@ -25,9 +25,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   sliders. A row of character buttons switches between every character logged in
   on the PC, with a live/offline dot driven by the heartbeat. The gear icon opens
   the job-independent settings that live in `/sk panel` in game — Multisend
-  Follow, Hold AOE for Group, AFK Sleep and its timeout, Cure and Waltz potency,
-  UI opacity, Load stopped, Stop after zone, section display mode, and Attack
-  Range when Multisend Follow is on. `/sk panel` itself is not reproduced.
+  Follow, Hold AOE for Group, Pianissimo Fast Casting, Cast with 1 Shadow, Cure
+  and Waltz potency, Song Duration, AFK Sleep and its timeout, UI opacity, Load
+  stopped, Stop after zone, section display mode, and Attack Range when
+  Multisend Follow is on. `/sk panel` itself is not reproduced.
 - **Schema export (`lib/ui/schema.lua`).** The config window as data, mirroring
   `lib/ui/config.lua`'s order, labels, enable keys, defaults and visibility
   rules. It is the contract in both directions: the browser draws what is in it,
