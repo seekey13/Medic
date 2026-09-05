@@ -764,6 +764,23 @@ function ui_config.get_party_buff_gates()
     return party_buff_gates
 end
 
+--- Drop both session-only party-buff mirrors so a stale character's target
+-- selections can't leak into the next one. Sidekick.lua's setup_job calls
+-- this from its character-changed branch, right before re-hydrating from the
+-- newly loaded settings -- callers outside this file go through this
+-- accessor rather than reaching into the party_buffs/party_buff_gates
+-- module-locals directly. hydrate_party_buffs only ever fills an empty
+-- mirror, so without this a same-job character switch would leave character
+-- B's Buffs/Geo/Sleep Removal/Debuff Removal rows (and Combat/Idle overrides)
+-- showing character A's choices -- in the in-game window, in state.json, and
+-- in B's actual automation. party_buff_gates has no settings table to
+-- re-hydrate from (it is purely session state), so clearing it is the whole
+-- fix for that one.
+function ui_config.reset_party_buff_state()
+    for k in pairs(party_buffs) do party_buffs[k] = nil end
+    for k in pairs(party_buff_gates) do party_buff_gates[k] = nil end
+end
+
 function ui_config.get_entrust_config()
     -- Return nil if entrust target or spell is None
     if not entrust_target_name or not entrust_spell_name then

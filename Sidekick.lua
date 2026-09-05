@@ -444,21 +444,33 @@ local function setup_job()
     -- game is now running the new one. character_key is the same
     -- '<Name>_<ServerId>' identity webui.tick uses to pick a character's own
     -- state.json folder -- without this check the web UI would show and let
-    -- the player edit character B's config under character A's name. nil
-    -- (mid-zone, no player in the snapshot yet) never counts as a change.
+    -- the player edit character B's config under character A's name.
+    --
+    -- current_character_key starts nil, and character_key() itself reads nil
+    -- until the first refresh_game_state() populates game_state.player. That
+    -- refresh hasn't happened yet the first time setup_job runs after a load,
+    -- since setup_job runs before automation_tick/render/panel/follow_tick in
+    -- d3d_present. So the first real observation is nil -> <key>: a SEED, not
+    -- a character change, and requiring both sides non-nil is what keeps it
+    -- from being treated as one (a mid-zone nil on either side is excluded
+    -- the same way). The tracker is still recorded on this pass -- via the
+    -- unconditional assignment below -- so the seed sticks for next frame's
+    -- comparison instead of comparing nil -> key again forever.
     local character_key = webui.character_key()
-    local character_changed = character_key ~= nil and character_key ~= current_character_key
+    local previous_character_key = current_character_key
+    local character_changed = character_key ~= nil and current_character_key ~= nil
+        and character_key ~= current_character_key
+    if character_key then current_character_key = character_key end
 
     if main_job_id == current_main_job_id and sub_job_id == current_sub_job_id
         and job_def and not character_changed then
         return  -- Already loaded
     end
 
-    if character_changed and current_character_key then
+    if character_changed then
         common.debugf('Character change detected (%s -> %s); reloading settings.',
-            current_character_key, character_key)
+            previous_character_key, character_key)
     end
-    current_character_key = character_key or current_character_key
 
     -- Track job change
     if current_main_job_id and (current_main_job_id ~= main_job_id or current_sub_job_id ~= sub_job_id) then
@@ -559,6 +571,22 @@ local function setup_job()
         end
 
         common.printf('Loaded settings for %s', job_def.job_name)
+
+        -- A same-job character switch just reloaded addon_settings above (this
+        -- point in the function, after settings.load, matters: doing this any
+        -- earlier would hydrate from character A's table before B's has been
+        -- loaded). The party-buff mirrors in lib/ui/config.lua are separate
+        -- module-locals that nothing else clears, so reset them and re-hydrate
+        -- from addon_settings now that it is B's -- reset first, since
+        -- hydrate_party_buffs only ever fills an already-empty mirror and
+        -- would otherwise no-op over A's leftover rows. This is what makes the
+        -- Buffs/Geo/Sleep Removal/Debuff Removal target rows and Combat/Idle
+        -- overrides follow the character switch instead of lagging a step
+        -- behind it.
+        if character_changed then
+            ui_config.reset_party_buff_state()
+            ui_config.hydrate_party_buffs(addon_settings)
+        end
     end
 end
 
@@ -1361,6 +1389,15 @@ ashita.events.register('command', 'sidekick_command', function(e)
                 common.printf('Usage: /sidekick webui url <http(s)://address>')
             elseif url:find('"', 1, true) then
                 common.printf('Web UI address cannot contain a " character.')
+            elseif url:find('%', 1, true) then
+                -- os.execute runs via cmd.exe /c, which expands %VAR% BEFORE its
+                -- special-character/quoting pass, so whatever the expansion
+                -- produces gets re-parsed as command syntax. &, |, <, >, ^ and \
+                -- are all inert inside the surrounding double quotes, but a %
+                -- reference is not -- an address containing %FOO% where FOO
+                -- holds something like "&calc&" would break out of the quoting
+                -- once expanded. Reject it the same way as the literal ".
+                common.printf('Web UI address cannot contain a % character.')
             elseif not url:match('^https?://') then
                 common.printf('Web UI address must start with http:// or https://')
             else

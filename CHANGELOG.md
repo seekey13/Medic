@@ -58,9 +58,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rows were loaded from `settings.party_buffs` only inside `render()`, which
   runs solely while the config window is on screen, so a session that never
   opened `/sidekick` had those buffs silently not fire at all even though the
-  saved targets were there. Hydration is now a shared function called from both
-  `render()` and the web UI bridge's tick, so it happens regardless of whether
-  the window — in game or in the browser — has ever been opened this session.
+  saved targets were there. Hydration is now a shared function called from
+  `render()`, the web UI bridge's tick, and an unconditional call on the first
+  tick settings exist in `Sidekick.lua`, so it happens regardless of whether
+  the window — in game or in the browser — has ever been opened this session,
+  and even in a session where the web UI is never turned on at all.
 
 ## [2.8.0] - 2026-08-31
 
