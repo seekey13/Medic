@@ -176,4 +176,158 @@ assert(idx.targets['Protect'] and idx.targets['Protect'].group == true, 'target 
 assert(idx.targets['Protect'].slots['2'] == true, 'target slot not indexed')
 assert(idx.ability['Cure V'] == nil, 'an out-of-level ability must not be settable')
 
+-- Finding 1: Group/AOE Healing target rows (ui.render_heal_group_selection) --
+-- config.lua:1130/1162 draw a Group/AOE Targets row inside these sections;
+-- ME/P1-P5 default ON (state[key] ~= false in render_heal_group_selection).
+local heal_targets = find_control(heal, function(c) return c.t == 'targets' and c.name == 'heal_group' end)
+assert(heal_targets, 'Group Healing must have a heal_group targets row')
+assert(heal_targets.label == 'Group Targets', 'Group Targets row mislabeled')
+assert(table.concat(heal_targets.slots, ',') == '0,1,2', 'Group Targets slots follow party size, like a buff row')
+assert(heal_targets.value['0'] == true and heal_targets.value['1'] == true and heal_targets.value['2'] == true,
+    'ME/P1-P5 default ON for Group Targets')
+
+local aoe = find_section(built, 'heal_aoe_enabled')
+local aoe_targets = find_control(aoe, function(c) return c.t == 'targets' and c.name == 'heal_aoe_group' end)
+assert(aoe_targets, 'AOE Healing must have a heal_aoe_group targets row')
+assert(aoe_targets.label == 'AOE Targets', 'AOE Targets row mislabeled')
+assert(aoe_targets.value['0'] == true, 'AOE Targets default ON')
+
+-- Group Targets hides for an all-self-only heal set, same gate as Focus Healing.
+local self_only_job = job_def()
+for _, a in ipairs(self_only_job.abilities.heal) do a.self_only = true end
+local self_only_heal = find_section(schema.build(self_only_job, {}, env()), 'heal_enabled')
+assert(self_only_heal, 'Group Healing section still shows for self-only heals')
+assert(not find_control(self_only_heal, function(c) return c.name == 'heal_group' end),
+    'Group Targets must hide when every heal is self-only')
+
+-- Finding 2: Sleep Removal targets default ON, not off -----------------------
+-- status_removal.lua treats a wholly-absent wake table as "allow every
+-- target"; a web-only user (who never opened the in-game panel, so
+-- env.party_buffs has no 'wake' entry at all) must see the same thing.
+local function wake_job_def()
+    local jd = job_def()
+    jd.abilities.heal[1].wakes = true
+    return jd
+end
+local wake_built = schema.build(wake_job_def(), {}, env())
+local wake_section = find_section(wake_built, 'wake_enabled')
+assert(wake_section, 'Sleep Removal must show when a heal ability wakes')
+local wake_row = find_control(wake_section, function(c) return c.name == 'wake' end)
+assert(wake_row, 'Sleep Removal targets row missing')
+assert(wake_row.value['1'] == true and wake_row.value['2'] == true,
+    'Sleep Removal targets must default ON when party_buffs.wake is entirely unset')
+
+-- An explicit false still turns a target off; unset siblings stay on.
+local wake_off_row = find_control(
+    find_section(schema.build(wake_job_def(), {}, env({ party_buffs = { wake = { [1] = false } } })), 'wake_enabled'),
+    function(c) return c.name == 'wake' end)
+assert(wake_off_row.value['1'] == false and wake_off_row.value['2'] == true,
+    'an explicit false target is honoured while unset ones stay on')
+
+-- Finding 3: Pianissimo/1 Shadow/Song Duration globals ------------------------
+-- panel.lua draws all three unconditionally (lines 467-516); they are
+-- persisted functional settings, so the web gear panel must expose them too.
+local pian = find_global(built, 'pianissimo_fast_casting')
+assert(pian and pian.t == 'check' and pian.value == false, 'Pianissimo Fast Casting missing from globals')
+local shadow = find_global(built, 'cast_with_1_shadow')
+assert(shadow and shadow.t == 'check' and shadow.value == false, 'Cast with 1 Shadow missing from globals')
+local song = find_global(built, 'song_duration')
+assert(song and song.t == 'slider' and song.min == 0 and song.max == 999 and song.value == 0,
+    'Song Duration (s) missing or has the wrong range/default')
+
+-- Order matches the panel: the two checkboxes right after Hold AOE for Group,
+-- Song Duration right after Waltz Potency.
+local function global_index(b, key)
+    for i, c in ipairs(b.globals) do
+        if c.key == key then return i end
+    end
+    return nil
+end
+local i_hold, i_pian, i_shadow, i_afk =
+    global_index(built, 'hold_aoe_for_group'), global_index(built, 'pianissimo_fast_casting'),
+    global_index(built, 'cast_with_1_shadow'), global_index(built, 'afk_enabled')
+assert(i_pian == i_hold + 1 and i_shadow == i_pian + 1 and i_afk == i_shadow + 1,
+    'Pianissimo Fast Casting/Cast with 1 Shadow must sit between Hold AOE for Group and AFK Sleep')
+local i_waltz, i_song, i_opacity =
+    global_index(built, 'waltz_potency'), global_index(built, 'song_duration'), global_index(built, 'ui_opacity')
+assert(i_song == i_waltz + 1 and i_opacity == i_song + 1,
+    'Song Duration must sit between Waltz Potency and UI Opacity')
+
+-- Finding 5: party_options must use the real player name, never 'ME' ---------
+-- render_party_dropdown inserts common.get_party_member_name(0); a saved
+-- focus_target is matched against real party names elsewhere, so the literal
+-- string 'ME' can never be selected and must never appear as an option.
+local named = schema.build(job_def(), {}, env({ player_name = 'Seekey' }))
+local focus_target = find_control(find_section(named, 'focus_enabled'),
+    function(c) return c.key == 'focus_target' end)
+assert(focus_target, 'Focus Target control missing')
+local focus_opts = table.concat(focus_target.options, ',')
+assert(focus_opts:find('Seekey', 1, true), 'Focus Target options must include the real player name')
+assert(not focus_opts:find('ME', 1, true), 'Focus Target options must never contain the literal ME')
+
+-- No env.player_name: omit the player entry, don't fall back to a placeholder.
+local unnamed_focus_target = find_control(find_section(built, 'focus_enabled'),
+    function(c) return c.key == 'focus_target' end)
+assert(table.concat(unnamed_focus_target.options, ',') == 'None,Butt,Mule',
+    'a missing env.player_name must omit the player entry, not fall back to ME')
+
+-- Finding 6: Geo control order -------------------------------------------
+-- Real order (config.lua:1476-1594): Geo-bt rows -> Full Circle -> Distance
+-- slider -> Timer slider (GEO only) -> Blaze of Glory -> Entrust. Blaze of
+-- Glory must NOT be bundled with Full Circle ahead of the sliders.
+local function geo_job_def()
+    local jd = job_def()
+    jd.job_id = 21
+    jd.abilities.geo = {
+        { name = 'Geo-Frailty', level = 1, command = function() end },
+        { name = 'Blaze of Glory', level = 1, command = 'ja' },
+        { name = 'Entrust', level = 1, command = 'ja' },
+    }
+    table.insert(jd.abilities.buff, { name = 'Indi-Frailty', level = 1, group = 'Indi', command = function() end })
+    return jd
+end
+local geo = find_section(schema.build(geo_job_def(), {}, env()), 'geo_enabled')
+assert(geo, 'Geo section missing')
+local function control_index(section, predicate)
+    for i, c in ipairs(section.controls) do
+        if predicate(c) then return i end
+    end
+    return nil
+end
+local i_full_circle = control_index(geo, function(c) return c.name == 'Geo-Frailty' end)
+local i_distance = control_index(geo, function(c) return c.key == 'geo_distance_threshold' end)
+local i_timer = control_index(geo, function(c) return c.key == 'geo_bt_timer' end)
+local i_blaze = control_index(geo, function(c) return c.name == 'Blaze of Glory' end)
+local i_entrust = control_index(geo, function(c) return c.name == 'Entrust' end)
+assert(i_full_circle and i_distance and i_timer and i_blaze and i_entrust,
+    'Geo controls missing for order check')
+assert(i_full_circle < i_distance, 'Full Circle must precede the sliders')
+assert(i_distance < i_timer, 'Distance slider must precede the Timer slider')
+assert(i_timer < i_blaze, 'Blaze of Glory must render after the sliders, not bundled with Full Circle')
+assert(i_blaze < i_entrust, 'Blaze of Glory must render before Entrust')
+
+-- Finding 7: level_ok must test "no level" before main_job_only --------------
+-- can_use_ability (config.lua:61-78) returns true for a level-less ability
+-- before it ever looks at main_job_only, so a main_job_only subjob ability
+-- with no level field must still be usable.
+local weird_job = job_def()
+table.insert(weird_job.abilities.buff,
+    { name = 'Weird Buff', main_job_only = true, is_main_job = false, command = function() end })
+local weird_buffs = find_section(schema.build(weird_job, {}, env()), 'buff_enabled')
+assert(find_control(weird_buffs, function(c) return c.name == 'Weird Buff' end),
+    'a level-less ability must be usable even when main_job_only marks it subjob-only')
+
+-- Finding 8: a stale selected_<group> falls back to the highest tier ---------
+-- get_selected_ability_for_group (components.lua:339-370) validates the saved
+-- tier name and falls back to the highest when it is stale; schema.lua must
+-- do the same instead of passing the stale name straight through, and must
+-- stay pure (never write back to the settings table it was given).
+local stale_settings = { selected_Protect = 'Nonexistent Tier' }
+local stale_buffs = find_section(schema.build(job_def(), stale_settings, env()), 'buff_enabled')
+local stale_tier = find_control(stale_buffs, function(c) return c.key == 'selected_Protect' end)
+assert(stale_tier and stale_tier.value == 'Protect II',
+    'a stale selected_Protect must fall back to the highest tier, not pass the stale name through')
+assert(stale_settings.selected_Protect == 'Nonexistent Tier',
+    'schema.build must never mutate the settings table it was given')
+
 print('test_schema.lua: OK')

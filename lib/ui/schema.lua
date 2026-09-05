@@ -41,8 +41,10 @@ end
 
 local function level_ok(ability, env)
     if not ability then return false end
-    if ability.main_job_only and ability.is_main_job == false then return false end
+    -- can_use_ability tests "no level field" before main_job_only -- an ability
+    -- with no level is always usable, even a main_job_only one on a subjob.
     if not ability.level then return true end
+    if ability.main_job_only and ability.is_main_job == false then return false end
     if ability.is_main_job == false then
         return (env.sub_level or 0) >= ability.level
     end
@@ -113,12 +115,20 @@ end
 
 -- The live party_buffs table is keyed by NUMBER for ME/P1-P5 and by the string
 -- 'A' for the area slot; the wire is strings for both.
-local function target_values(env, name, slots)
+--
+-- `default_on` mirrors two different real readers of this same party_buffs
+-- table: an ability-target row (Buffs) is opt-in, so an unset slot reads off
+-- (raw == true); a target-audience row (Sleep Removal, Group/AOE Targets) is
+-- opt-out -- make_group_filter in heal.lua and is_wake_allowed in
+-- status_removal.lua both read an unset slot as included (raw ~= false), so a
+-- web-only user who never toggled anything sees the same "everyone" the addon
+-- is actually acting on, not an all-unchecked row.
+local function target_values(env, name, slots, default_on)
     local live = (env.party_buffs or {})[name] or {}
     local out = {}
     for _, slot in ipairs(slots) do
         local raw = (slot == 'A') and live['A'] or live[tonumber(slot)]
-        out[slot] = (raw == true)
+        out[slot] = default_on and (raw ~= false) or (raw == true)
     end
     return out
 end
@@ -176,8 +186,20 @@ local function emit_rows(out, job_def, list, settings, env, filter)
                         out[#out + 1] = ability_row(settings, env, group, true, a)
                         local names = {}
                         for i, tier in ipairs(tiers) do names[i] = tier.name end
+                        -- get_selected_ability_for_group falls back to the highest
+                        -- tier when the saved name is stale (job/level change moved
+                        -- it out of range); match that instead of passing a name
+                        -- through that may no longer be in `names` at all. Pure --
+                        -- unlike the real function, never writes back to settings.
+                        local saved = settings['selected_' .. group]
+                        local saved_is_valid = false
+                        if saved then
+                            for _, name in ipairs(names) do
+                                if name == saved then saved_is_valid = true break end
+                            end
+                        end
                         out[#out + 1] = combo('selected_' .. group, group .. ' tier',
-                            settings['selected_' .. group] or names[#names], names)
+                            saved_is_valid and saved or names[#names], names)
                     end
                 end
             else
@@ -207,10 +229,19 @@ local function add_section(out, settings, label, key, default, controls)
 end
 
 -- 'None' plus every P1-P5 name, plus tracked targets when the dropdown offers
--- them. include_player puts ME at the front, as render_party_dropdown does.
+-- them. include_player puts the player's own name at the front, as
+-- render_party_dropdown does -- it inserts common.get_party_member_name(0),
+-- a real character name, never the literal string 'ME'. resolve_focus_target
+-- matches settings.focus_target against real party names, so a literal 'ME'
+-- would never match and a saved Focus Target would show as unselected.
+-- When env.player_name is missing or empty (not yet supplied, or the name
+-- read failed), omit the player entry entirely rather than falling back to
+-- a placeholder that could falsely match a real party member later.
 local function party_options(env, include_player, include_tracked)
     local options = { 'None' }
-    if include_player then options[#options + 1] = 'ME' end
+    if include_player and env.player_name and env.player_name ~= '' then
+        options[#options + 1] = env.player_name
+    end
     for _, name in ipairs(env.party_names or {}) do options[#options + 1] = name end
     if include_tracked then
         for _, name in ipairs(env.tracked_names or {}) do options[#options + 1] = name end
@@ -285,6 +316,13 @@ function schema.build(job_def, settings, env)
         local controls = {
             slider('heal_threshold', 'Group (HP%)', settings.heal_threshold or 75, 1, 100),
         }
+        -- Group Targets buttons only make sense when a heal can target someone
+        -- else; hidden for a self-only heal set, same gate as Focus Healing.
+        if has_non_self_heal(abilities.heal) then
+            local slots = target_slots(nil, env)
+            controls[#controls + 1] = { t = 'targets', name = 'heal_group', label = 'Group Targets',
+                group = false, slots = slots, value = target_values(env, 'heal_group', slots, true) }
+        end
         emit_checks(controls, job_def, abilities.heal, settings, env)
         if any_usable(abilities.critical, env) then
             controls[#controls + 1] = slider('critical_threshold', 'Critical (HP%)',
@@ -299,6 +337,13 @@ function schema.build(job_def, settings, env)
         local controls = {
             slider('heal_aoe_threshold', 'AOE (HP%)', settings.heal_aoe_threshold or 70, 1, 100),
         }
+        -- Unlike Group Healing, no non-self-heal gate: AOE heals always hit
+        -- others, so config.lua draws this unconditionally.
+        do
+            local slots = target_slots(nil, env)
+            controls[#controls + 1] = { t = 'targets', name = 'heal_aoe_group', label = 'AOE Targets',
+                group = false, slots = slots, value = target_values(env, 'heal_aoe_group', slots, true) }
+        end
         emit_checks(controls, job_def, abilities.heal_aoe, settings, env)
         add_section(sections, settings, 'AOE Healing', 'heal_aoe_enabled', false, controls)
     end
@@ -323,7 +368,7 @@ function schema.build(job_def, settings, env)
         for i = 1, math.min((env.party_size or 1) - 1, 5) do slots[#slots + 1] = tostring(i) end
         add_section(sections, settings, 'Sleep Removal', 'wake_enabled', false, {
             { t = 'targets', name = 'wake', label = 'Sleep Targets', group = false,
-              slots = slots, value = target_values(env, 'wake', slots) },
+              slots = slots, value = target_values(env, 'wake', slots, true) },
         })
     end
 
@@ -429,13 +474,23 @@ function schema.build(job_def, settings, env)
         local controls = {}
         emit_rows(controls, job_def, abilities.geo, settings, env,
             function(a) return a.group == 'Geo-bt' end)
+        -- Full Circle: every ungrouped geo ability except Entrust and Blaze of
+        -- Glory, which get their own placement below (mirrors config.lua's
+        -- explicit exclusion of both names from this loop).
         emit_rows(controls, job_def, abilities.geo, settings, env,
-            function(a) return a.group == nil and a.name ~= 'Entrust' end)
+            function(a) return a.group == nil and a.name ~= 'Entrust' and a.name ~= 'Blaze of Glory' end)
         controls[#controls + 1] = slider('geo_distance_threshold', 'Distance (yalms)',
             settings.geo_distance_threshold or 10, 7, 30)
         if job_def.job_id == 21 then
             controls[#controls + 1] = slider('geo_bt_timer', 'Timer (seconds)',
                 settings.geo_bt_timer or 5, 1, 20)
+        end
+        -- Blaze of Glory is a precast for the NEXT Geo spell, not part of the
+        -- Full Circle distance logic, so it renders after those sliders --
+        -- job-independent (not gated on job_id == 21), same as config.lua.
+        emit_rows(controls, job_def, abilities.geo, settings, env,
+            function(a) return a.name == 'Blaze of Glory' end)
+        if job_def.job_id == 21 then
             local indi = {}
             for _, a in ipairs(abilities.buff or {}) do
                 if a.group == 'Indi' and usable(job_def, a, env)
@@ -470,10 +525,19 @@ function schema.build(job_def, settings, env)
     local globals = {
         check('multisend_follow', 'Multisend Follow', settings.multisend_follow),
         check('hold_aoe_for_group', 'Hold AOE for Group', settings.hold_aoe_for_group),
+        -- Pianissimo Fast Casting (BRD) and Cast with 1 Shadow (NIN): drawn
+        -- unconditionally by the panel despite the job-specific comments, since
+        -- it's a debug surface where a stable row beats one that reshuffles on
+        -- job change. Persisted functional settings, so the gear panel owns them.
+        check('pianissimo_fast_casting', 'Pianissimo Fast Casting', settings.pianissimo_fast_casting),
+        check('cast_with_1_shadow', 'Cast with 1 Shadow', settings.cast_with_1_shadow),
         check('afk_enabled', 'AFK Sleep', settings.afk_enabled ~= false),
         slider('afk_timeout', 'AFK Timeout (seconds)', settings.afk_timeout or 600, 60, 3600),
         slider('cure_potency', 'Cure Potency +%', settings.cure_potency or 0, 0, 100),
         slider('waltz_potency', 'Waltz Potency +%', settings.waltz_potency or 0, 0, 100),
+        -- Song Duration (BRD): 0 = memory-based recast (default), >0 = manual
+        -- song timers. See lib/actions/buff.lua.
+        slider('song_duration', 'Song Duration (s)', settings.song_duration or 0, 0, 999),
         slider('ui_opacity', 'UI Opacity', settings.ui_opacity or 100, 1, 100),
         check('load_stopped', 'Load stopped', settings.load_stopped),
         check('stop_after_zone', 'Stop after zone', settings.stop_after_zone),
