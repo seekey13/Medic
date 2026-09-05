@@ -5,16 +5,20 @@
     // stays on the player's own disk and is read by the browser, not by this
     // Worker.
     "name": "sidekick",
+    // The token can see more than one account, so name the one this deploys to
+    // -- without it `wrangler deploy` cannot pick and bails out. It also fixes
+    // the workers.dev subdomain below, which is per-account.
+    "account_id": "1d01891f2b3c881b2716dfdbb78d58f3",
     "compatibility_date": "2026-09-01",
-    // Custom Domain rather than the account's workers.dev subdomain, so the
-    // address in /sk webui open is the same for everyone and does not depend on
-    // whose account the worker was deployed from. Cloudflare creates the DNS
-    // record and manages the certificate itself, so `zone_name` is not needed
-    // -- but xiim.app must already be an active zone on the deploying account,
-    // or `wrangler deploy` fails here rather than falling back to workers.dev.
-    "routes": [
-        { "pattern": "sidekick.xiim.app", "custom_domain": true }
-    ],
+    // The account's own workers.dev subdomain, giving
+    // https://sidekick.xiim-app.workers.dev -- the address /sk webui open
+    // defaults to. A `sidekick.xiim.app` Custom Domain would be nicer, but that
+    // needs xiim.app to be an *active* zone on the account above; today the
+    // active xiim.app zone sits on a different account and the copy here is
+    // stuck pending, so a custom_domain route resolves to nothing. Move the
+    // zone, then swap this for:
+    //   "routes": [{ "pattern": "sidekick.xiim.app", "custom_domain": true }]
+    "workers_dev": true,
     "assets": {
         // This directory, minus what `.assetsignore` holds back (this file and
         // package.json, which are tooling, not site content).

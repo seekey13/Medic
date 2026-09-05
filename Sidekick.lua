@@ -73,11 +73,11 @@ local last_sub_job_id = nil
 local last_level = nil
 local last_unsupported_warning = nil  -- Track last unsupported job warning to prevent spam
 
--- Default address for webui_url (below). wrangler.jsonc attaches the worker to
--- this Custom Domain, so it is the same for everyone rather than the
--- account-specific *.workers.dev subdomain a bare deploy would produce.
+-- Default address for webui_url (below). This is where wrangler.jsonc deploys
+-- the web app, so it is the same for everyone rather than something each player
+-- has to be told.
 -- /sk webui url still exists for anyone hosting their own copy elsewhere.
-local DEFAULT_WEBUI_URL = 'https://sidekick.xiim.app'
+local DEFAULT_WEBUI_URL = 'https://sidekick.xiim-app.workers.dev'
 
 -- Settings file path
 local default_settings = T{

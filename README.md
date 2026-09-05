@@ -58,7 +58,7 @@ The one exception is **opt-in leader following** (off by default): with **Follow
 
 ### Added
 - **Web UI**: `/sk webui on` lets the Sidekick web app read this character's config and change it from a browser.
-- **Web app**: a hosted page at https://sidekick.xiim.app draws the same sections and checkboxes as the in-game window, for every character logged in on this PC.
+- **Web app**: a hosted page at https://sidekick.xiim-app.workers.dev draws the same sections and checkboxes as the in-game window, for every character logged in on this PC.
 
 ### Changed
 - **Gear panel**: the job-independent settings `/sk panel` holds in game are reachable from the web app's gear icon.

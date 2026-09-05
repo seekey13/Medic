@@ -44,3 +44,7 @@ docs/
 # Superpowers SDD workspace (ledgers, briefs, review packages) -- local scratch
 .superpowers/
 .DS_Store
+
+# Wrangler build cache / temp for the web UI deploy
+web/.wrangler/
+web/node_modules/

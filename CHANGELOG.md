@@ -19,10 +19,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   character is writing to that character's folder. `/sk webui folder` prints the
   path to point the app at; `/sk webui open` opens the address in the
   per-character `webui_url` setting, and `/sk webui url <address>` changes it.
-  The default is `https://sidekick.xiim.app`, the Custom Domain `wrangler.jsonc`
-  attaches the worker to, so the address is the same for everyone rather than
-  the account-specific `*.workers.dev` subdomain a bare deploy would produce.
-  `/sk webui url` is there for anyone hosting their own copy elsewhere.
+  The default is `https://sidekick.xiim-app.workers.dev`, where
+  `wrangler.jsonc` deploys the app, so the address is the same for everyone
+  rather than something each player has to be told. `/sk webui url` is there for
+  anyone hosting their own copy elsewhere.
 - **Web app.** A hosted progressive web app (Chromium only — the File System
   Access API does not exist in Firefox or Safari) that draws the config window
   from the schema the addon exports: the same sections in the same order, with
