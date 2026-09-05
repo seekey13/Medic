@@ -267,4 +267,288 @@ function webui.format_response(id, result)
     return table.concat(lines, '\n') .. '\n'
 end
 
+-- ============================================================================
+-- Files
+--
+-- Everything below runs in the game client only: AshitaCore for the install
+-- path, and lazy requires for common/ui_config/components, which pull in
+-- Ashita's own libraries and cannot load headless. Nothing above this line
+-- touches either, which is what keeps tests/test_webui.lua runnable.
+-- ============================================================================
+
+-- Shape of state.json. The browser refuses a snapshot stamped with anything
+-- else rather than guessing at a layout it does not know.
+webui.STATE_FORMAT = 1
+
+local enabled = false
+local last_state = nil   -- last encoded snapshot, so an unchanged one skips the disk
+local last_key = nil
+local next_state = 0
+local next_heartbeat = 0
+local next_poll = 0
+
+local STATE_INTERVAL = 1.0
+local POLL_INTERVAL = 1.0
+local HEARTBEAT_INTERVAL = 10.0
+
+function webui.is_enabled()
+    return enabled
+end
+
+function webui.set_enabled(on)
+    enabled = on and true or false
+    last_state = nil  -- force a rewrite on the next tick
+end
+
+-- Character keys are used verbatim as a directory name, so anything carrying a
+-- separator or a dot could reach outside the addon's config folder.
+function webui.is_valid_key(key)
+    return type(key) == 'string' and #key > 0 and #key <= 64
+        and key:match('^[%w_%-]+$') ~= nil
+end
+
+function webui.root_dir()
+    return string.format('%sconfig\\addons\\sidekick\\', AshitaCore:GetInstallPath())
+end
+
+function webui.character_dir(key)
+    if not webui.is_valid_key(key) then return nil end
+    return webui.root_dir() .. key .. '\\'
+end
+
+--- '<Name>_<ServerId>' -- the folder Ashita's settings module already made.
+-- nil while zoning, when the party snapshot has no player in it yet.
+function webui.character_key()
+    local common = require('lib.core.common')
+    local player = common.game_state and common.game_state.player
+    if not player or not player.name or player.name == '' then return nil end
+    if not player.server_id or player.server_id == 0 then return nil end
+    local key = string.format('%s_%d', player.name, player.server_id)
+    return webui.is_valid_key(key) and key or nil
+end
+
+local function write_file(path, body)
+    local file = io.open(path, 'w')
+    if not file then return false end
+    file:write(body)
+    file:close()
+    return true
+end
+
+--- Everything schema.build needs that only the game knows.
+local function build_env(settings)
+    local common = require('lib.core.common')
+    local ui_config = require('lib.ui.config')
+    local ui = require('lib.ui.components')
+    local item = require('lib.actions.item')
+
+    local main_level, sub_level = common.get_player_level()
+
+    local party_names = {}
+    for i = 1, 5 do
+        if common.is_party_member_active(i) then
+            local name = common.get_party_member_name(i)
+            if name and name ~= '' then party_names[#party_names + 1] = name end
+        end
+    end
+
+    local tracked_names = {}
+    for _, tracked in pairs(common.get_tracked_targets()) do
+        tracked_names[#tracked_names + 1] = tracked.name
+    end
+    table.sort(tracked_names)
+
+    local loaded = ui.item_inventory_loaded()
+    local item_removals = {}
+    if loaded then
+        for _, entry in ipairs(item.REMOVALS) do
+            item_removals[#item_removals + 1] = {
+                key = entry.setting_key,
+                label = string.format('%s with %s (%d)', entry.debuff_name, entry.item_name,
+                    item.get_item_count(entry.item_id) or 0),
+                value = settings[entry.setting_key] == true,
+            }
+        end
+    end
+
+    return {
+        main_level = main_level or 0,
+        sub_level = sub_level or 0,
+        -- The player's own name, not the literal 'ME': render_party_dropdown
+        -- writes a real character name into focus_target, and a dropdown whose
+        -- options do not contain the saved value shows nothing selected.
+        player_name = common.game_state.player.name,
+        party_size = common.get_party_size(),
+        party_names = party_names,
+        tracked_names = tracked_names,
+        party_buffs = ui_config.get_party_buffs(),
+        item_removals = item_removals,
+        item_inventory_loaded = loaded,
+        has_spell = function(ability) return common.has_spell_learned(ability) end,
+    }
+end
+
+--- The ctx the exported toggles expect, built from the same live tables the
+-- config window uses so a browser click and an in-game click are one path.
+local function toggle_ctx(deps)
+    local ui_config = require('lib.ui.config')
+    return {
+        settings = deps.settings,
+        save_callback = deps.save,
+        party_buffs = ui_config.get_party_buffs(),
+        party_buff_gates = ui_config.get_party_buff_gates(),
+        job_def = deps.job_def,
+    }
+end
+
+local function build_snapshot(deps, key)
+    local common = require('lib.core.common')
+    local schema = require('lib.ui.schema')
+
+    local built = schema.build(deps.job_def, deps.settings, build_env(deps.settings))
+    local main_job_id, sub_job_id = common.get_player_job()
+    local main_level, sub_level = common.get_player_level()
+
+    return {
+        v = webui.STATE_FORMAT,
+        key = key,
+        character = common.game_state.player.name,
+        job = common.get_job_name_from_id(main_job_id),
+        job_id = main_job_id or 0,
+        main_level = main_level or 0,
+        sub_job = (sub_level and sub_level > 0 and sub_job_id and sub_job_id > 0)
+            and common.get_job_name_from_id(sub_job_id) or 'None',
+        sub_level = sub_level or 0,
+        automation = deps.automation and true or false,
+        status = deps.status or '',
+        profile = deps.settings.active_profile or 'Default',
+        sections = built.sections,
+        globals = built.globals,
+    }, built
+end
+
+--- Read, execute and answer at most one request for this character.
+local function poll(deps, dir, built)
+    local common = require('lib.core.common')
+    local ui = require('lib.ui.components')
+    local schema = require('lib.ui.schema')
+
+    local path = dir .. 'request.txt'
+    local file = io.open(path, 'r')
+    if not file then return false end
+    local body = file:read('*all')
+    file:close()
+
+    -- Remove it before doing anything else. A request that fails to validate
+    -- must not be retried every second for the rest of the session, and one
+    -- that throws must not be replayed.
+    os.remove(path)
+
+    local parsed, err = webui.parse_request(body, os.time())
+    if not parsed then
+        common.debugf('[WebUI] Rejected request: %s', tostring(err))
+        write_file(dir .. 'response.txt', webui.format_response('unknown', { ok = false, err = err }))
+        return false
+    end
+
+    local ctx = toggle_ctx(deps)
+    local result = webui.apply(parsed, {
+        settings = deps.settings,
+        index = schema.index(built),
+        toggles = {
+            ability = function(name, is_group, on)
+                if is_group then
+                    ui.toggle_group(ctx, name, on)
+                else
+                    ui.toggle_ability(ctx, name, on)
+                end
+            end,
+            buff = function(name, is_group, slot, on)
+                if is_group then
+                    ui.toggle_group_party_buff(ctx, name, slot, on)
+                else
+                    ui.toggle_party_buff(ctx, name, slot, on)
+                end
+            end,
+            command = function(word) deps.exec('/sidekick ' .. word) end,
+            save = deps.save,
+        },
+    })
+
+    write_file(dir .. 'response.txt', webui.format_response(parsed.id, result))
+    if not result.ok then
+        common.debugf('[WebUI] Request %s failed: %s', parsed.id, tostring(result.err))
+    end
+    return result.ok
+end
+
+--- Called every frame from Sidekick.lua's d3d_present handler. Self-throttled.
+function webui.tick(deps)
+    if not enabled or not deps.settings or not deps.job_def then return end
+
+    local key = webui.character_key()
+    if not key then return end
+
+    local dir = webui.character_dir(key)
+    if not dir then return end
+    if key ~= last_key then
+        -- The settings module made this folder at load, but a first login on a
+        -- new character can beat it there.
+        ashita.fs.create_dir(dir)
+        last_key = key
+        last_state = nil
+    end
+
+    local now = os.clock()
+    local json = require('lib.core.json')
+
+    -- The snapshot and the request channel share one build of the schema: the
+    -- browser is answered against exactly what it was last shown.
+    local built = nil
+
+    if now >= next_state then
+        next_state = now + STATE_INTERVAL
+        local snapshot
+        snapshot, built = build_snapshot(deps, key)
+        local encoded = json.encode(snapshot)
+        -- Object keys are sorted, so an unchanged config encodes to an
+        -- unchanged string and never reaches the disk.
+        if encoded ~= last_state then
+            if write_file(dir .. 'state.json', encoded) then
+                last_state = encoded
+            end
+        end
+    end
+
+    if now >= next_poll then
+        next_poll = now + POLL_INTERVAL
+        if not built then
+            local _
+            _, built = build_snapshot(deps, key)
+        end
+        if poll(deps, dir, built) then
+            -- A change just landed; write the snapshot back on the next tick
+            -- rather than making the browser wait a full second to see it.
+            next_state = 0
+            last_state = nil
+        end
+    end
+
+    if now >= next_heartbeat then
+        next_heartbeat = now + HEARTBEAT_INTERVAL
+        write_file(dir .. 'heartbeat.json',
+            string.format('{"last_seen":%d,"is_online":true}', os.time()))
+    end
+end
+
+--- Mark this character offline. Called on unload and when the feature is
+-- switched off, so a browser tab does not show a client that is gone as live.
+function webui.go_offline()
+    local key = last_key or webui.character_key()
+    local dir = key and webui.character_dir(key)
+    if not dir then return end
+    write_file(dir .. 'heartbeat.json',
+        string.format('{"last_seen":%d,"is_online":false}', os.time()))
+end
+
 return webui

@@ -26,6 +26,7 @@ local automation = require('lib.core.automation')
 local parse_packets = require('lib.core.parse_packets')
 local afk = require('lib.core.afk')
 local party_share = require('lib.core.party_share')  -- Shared party list (publish + tracked-target sync)
+local webui = require('lib.core.webui')  -- Web UI bridge (/sk webui)
 local vanadiel = require('lib.core.vanadiel')  -- Weather/day readers + enspell element auto-select
 
 -- Load action modules
@@ -116,6 +117,10 @@ local default_settings = T{
     ui_open = false,
     -- Same, for the floating widget (/sk widget).
     widget_open = false,
+    -- Web UI bridge (/sk webui). Off by default: it writes a snapshot of this
+    -- character's config to disk for the browser to read, which nobody who has
+    -- not asked for it should be paying for.
+    webui_enabled = false,
 }
 
 -- Range management state
@@ -823,6 +828,11 @@ ashita.events.register('unload', 'sidekick_unload', function()
         settings.save()
     end
 
+    -- A browser tab must not keep showing a client that is gone as live.
+    if webui.is_enabled() then
+        webui.go_offline()
+    end
+
     party_share.cleanup()
 
     common.printf('Unloaded.')
@@ -858,6 +868,8 @@ ashita.events.register('d3d_present', 'sidekick_render', function()
         if addon_settings.widget_open == true then
             ui_config.toggle_widget()  -- starts hidden, so toggle == show
         end
+
+        webui.set_enabled(addon_settings.webui_enabled == true)
     end
 
     local save_settings_callback = function()
@@ -884,6 +896,30 @@ ashita.events.register('d3d_present', 'sidekick_render', function()
 
     -- Publish our party roster and mirror tracked anchors' parties (own 2s timer).
     party_share.tick()
+
+    -- Web UI bridge: snapshot out, requests in. Self-throttled, and inert
+    -- unless /sk webui is on.
+    if addon_settings then
+        local status = 'Automation stopped'
+        if automation_enabled then
+            if     common.is_loading() then status = 'Automation loading'
+            elseif afk.is_sleeping()   then status = 'Automation asleep'
+            elseif common.is_mounted() then status = 'Automation mounted'
+            elseif common.is_dead()    then status = 'Automation dead'
+            elseif common.is_resting() then status = 'Automation resting'
+            elseif common.can_attack() then status = 'Automation running'
+            else                            status = 'Automation paused'
+            end
+        end
+        webui.tick({
+            settings = addon_settings,
+            job_def = job_def,
+            automation = automation_enabled,
+            status = status,
+            save = save_settings_callback,
+            exec = function(cmd) AshitaCore:GetChatManager():QueueCommand(1, cmd) end,
+        })
+    end
 end)
 
 -- 0x028 categories marking one of our actions *resolving*. The post-action lockout is
@@ -1213,6 +1249,7 @@ ashita.events.register('command', 'sidekick_command', function(e)
         common.printf('  /sidekick toggle - Toggle automation on/off')
         common.printf('  /sidekick config - Show configuration UI')
         common.printf('  /sidekick widget - Toggle the floating profile/job + Start/Stop widget')
+        common.printf('  /sidekick webui [on|off|folder|open] - Web UI bridge for the browser app')
         common.printf('  /sidekick focus <index> - Set focus target (0-5, party member index)')
         common.printf('  /sidekick focus clear - Clear focus target')
         common.printf('  /sidekick addtarget - Track current target for automation')
@@ -1252,6 +1289,27 @@ ashita.events.register('command', 'sidekick_command', function(e)
     elseif cmd == 'widget' then
         -- Persisted by the unload handler, same as /sidekick config.
         ui_config.toggle_widget()
+
+    elseif cmd == 'webui' then
+        local sub = args[3] and args[3]:lower()
+        if sub == 'on' or sub == 'off' then
+            addon_settings.webui_enabled = (sub == 'on')
+            webui.set_enabled(addon_settings.webui_enabled)
+            if not addon_settings.webui_enabled then
+                webui.go_offline()
+            end
+            settings.save()
+            common.printf('Web UI %s.', addon_settings.webui_enabled and 'enabled' or 'disabled')
+        elseif sub == 'folder' then
+            common.printf('%s', webui.root_dir())
+            common.printf('Choose that folder in the web app.')
+        elseif sub == 'open' then
+            os.execute('start "" "https://sidekick.workers.dev"')
+            common.printf('Opening the web interface...')
+        else
+            common.printf('Web UI: %s. Usage: /sidekick webui [on|off|folder|open]',
+                webui.is_enabled() and 'enabled' or 'disabled')
+        end
 
     elseif cmd == 'focus' then
         local subcmd = args[3] and args[3]:lower()

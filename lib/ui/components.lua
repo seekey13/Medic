@@ -3235,4 +3235,27 @@ ui_components.LIGHT_RED = LIGHT_RED
 ui_components.LIGHT_YELLOW = LIGHT_YELLOW
 ui_components.LIGHT_GRAY = LIGHT_GRAY
 
+-- ============================================================================
+-- Exports for the web UI bridge (lib/core/webui.lua)
+-- ============================================================================
+-- A row toggled from the browser must land on exactly the same code path as a
+-- click in game: the song limit, exclusive Geo targets and the disabled_ key
+-- sync all live in here, and a second implementation of them would drift.
+
+function ui_components.toggle_ability(ctx, ability_name, enabled)
+    toggle_ability(ctx, ability_name, enabled, ctx.job_def)
+end
+
+function ui_components.toggle_group(ctx, group_name, enabled)
+    toggle_group(ctx, group_name, enabled)
+end
+
+function ui_components.toggle_party_buff(ctx, ability_name, party_index, enabled)
+    toggle_party_buff(ctx, ability_name, party_index, enabled)
+end
+
+function ui_components.toggle_group_party_buff(ctx, group_name, party_index, enabled)
+    toggle_group_party_buff(ctx, group_name, party_index, enabled)
+end
+
 return ui_components
