@@ -73,12 +73,11 @@ local last_sub_job_id = nil
 local last_level = nil
 local last_unsupported_warning = nil  -- Track last unsupported job warning to prevent spam
 
--- Placeholder default for webui_url (below): wrangler.jsonc names the worker
--- 'sidekick' with no route and no custom domain, so `wrangler deploy` actually
--- publishes to sidekick.<account-subdomain>.workers.dev -- a subdomain specific
--- to whichever Cloudflare account it was deployed under, which this repo has
--- no way to know. /sk webui url lets each player point 'open' at their own.
-local DEFAULT_WEBUI_URL = 'https://sidekick.workers.dev'
+-- Default address for webui_url (below). wrangler.jsonc attaches the worker to
+-- this Custom Domain, so it is the same for everyone rather than the
+-- account-specific *.workers.dev subdomain a bare deploy would produce.
+-- /sk webui url still exists for anyone hosting their own copy elsewhere.
+local DEFAULT_WEBUI_URL = 'https://sidekick.xiim.app'
 
 -- Settings file path
 local default_settings = T{
@@ -131,9 +130,8 @@ local default_settings = T{
     -- character's config to disk for the browser to read, which nobody who has
     -- not asked for it should be paying for.
     webui_enabled = false,
-    -- Address /sk webui open launches. Per-character (not global) so each
-    -- player can point it at wherever they actually deployed the worker; see
-    -- DEFAULT_WEBUI_URL above for why the built-in default may not resolve.
+    -- Address /sk webui open launches. Per-character (not global) so anyone
+    -- running their own copy of the worker can point it somewhere else.
     webui_url = DEFAULT_WEBUI_URL,
 }
 

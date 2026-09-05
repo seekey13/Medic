@@ -6,6 +6,15 @@
     // Worker.
     "name": "sidekick",
     "compatibility_date": "2026-09-01",
+    // Custom Domain rather than the account's workers.dev subdomain, so the
+    // address in /sk webui open is the same for everyone and does not depend on
+    // whose account the worker was deployed from. Cloudflare creates the DNS
+    // record and manages the certificate itself, so `zone_name` is not needed
+    // -- but xiim.app must already be an active zone on the deploying account,
+    // or `wrangler deploy` fails here rather than falling back to workers.dev.
+    "routes": [
+        { "pattern": "sidekick.xiim.app", "custom_domain": true }
+    ],
     "assets": {
         // This directory, minus what `.assetsignore` holds back (this file and
         // package.json, which are tooling, not site content).
