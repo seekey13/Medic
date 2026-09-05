@@ -1,0 +1,13 @@
+{
+    "name": "Sidekick",
+    "short_name": "Sidekick",
+    "description": "Control the Sidekick support automation addon from your browser. Reads your own local config; nothing is stored online.",
+    "start_url": "./",
+    "scope": "./",
+    "display": "standalone",
+    "background_color": "#0f172a",
+    "theme_color": "#0f172a",
+    "icons": [
+        { "src": "assets/Sidekick.svg", "sizes": "any", "type": "image/svg+xml" }
+    ]
+}

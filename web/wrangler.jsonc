@@ -1,0 +1,18 @@
+{
+    // Sidekick's web UI is a static site and nothing else: no `main` entry
+    // point, no bindings, no KV/D1/R2/Durable Objects. Cloudflare serves the
+    // files beside this config and never sees a byte of anyone's config -- that
+    // stays on the player's own disk and is read by the browser, not by this
+    // Worker.
+    "name": "sidekick",
+    "compatibility_date": "2026-09-01",
+    "assets": {
+        // This directory, minus what `.assetsignore` holds back (this file and
+        // package.json, which are tooling, not site content).
+        "directory": "."
+        // No not_found_handling: the app has no router and no deep links, and
+        // "single-page-application" turns every 404 into a 200 carrying
+        // index.html -- which the service worker would then cache as HTML under
+        // a renamed asset's old URL.
+    }
+}

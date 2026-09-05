@@ -1,0 +1,11 @@
+{
+    "name": "sidekick-web",
+    "private": true,
+    "description": "Static front end for the Sidekick Ashita addon. No runtime dependencies.",
+    "scripts": {
+        "test": "node tests/test-protocol.js && node tests/test-fsbridge.js && node tests/test-render.js && node tests/test-sw.js",
+        "test:lua": "cd .. && lua tests/test_json.lua && lua tests/test_schema.lua && lua tests/test_webui.lua",
+        "dev": "wrangler dev",
+        "deploy": "wrangler deploy"
+    }
+}
