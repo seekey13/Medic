@@ -65,7 +65,7 @@ assert(#crlf.ops == 1 and crlf.ops[1][2] == 'stop', 'CRLF op lost')
 local function ctx()
     local calls = { ability = {}, buff = {}, command = {}, saves = 0 }
     local settings = { heal_threshold = 75, heal_enabled = false, risk_tier = 'medium',
-                        focus_target = 'Alice' }
+                        focus_target = 'Alice', multisend_follow = true, attack_range = 'Melee (3 yalms)' }
     return {
         settings = settings,
         calls = calls,
@@ -79,6 +79,7 @@ local function ctx()
                 -- of its real options, the way a clearable target picker's is.
                 focus_target = { t = 'combo', key = 'focus_target',
                                  options = { 'None', 'Alice', 'Bob' } },
+                multisend_follow = { t = 'check', key = 'multisend_follow' },
             },
             -- 'Utsusemi' stands in for a real self-cast group (Ninja's
             -- Utsusemi tiers, Black Mage's spikes, Scholar's arts/storm):
@@ -170,6 +171,21 @@ c = ctx()
 local none_result = webui.apply(accepts('id|a\nts|' .. NOW .. '\nset|focus_target|None'), c)
 assert(none_result.ok, 'a listed None option was rejected: ' .. tostring(none_result.err))
 assert(c.settings.focus_target == nil, 'None did not clear the setting')
+
+-- Parity with lib/ui/panel.lua's Multisend Follow checkbox: switching it off
+-- from the browser must also clear a stale Attack Range, or it silently
+-- re-arms that movement behaviour the moment Multisend is turned back on.
+c = ctx()
+assert(webui.apply(accepts('id|a\nts|' .. NOW .. '\nset|multisend_follow|false'), c).ok)
+assert(c.settings.multisend_follow == false, 'multisend_follow not written')
+assert(c.settings.attack_range == 'Off', 'attack_range was not cleared when multisend_follow was turned off')
+
+-- Turning it ON must not touch a since-set Attack Range.
+c = ctx()
+c.settings.attack_range = 'Ranged (15 yalms)'
+c.settings.multisend_follow = false
+assert(webui.apply(accepts('id|a\nts|' .. NOW .. '\nset|multisend_follow|true'), c).ok)
+assert(c.settings.attack_range == 'Ranged (15 yalms)', 'attack_range was touched when multisend_follow was turned on')
 
 -- Anything not in the schema right now is not settable right now.
 c = ctx()

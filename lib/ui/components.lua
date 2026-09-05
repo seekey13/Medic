@@ -2918,6 +2918,40 @@ local function draw_toggle(label, id, on, on_click, tooltip, disabled_reason)
     elseif not on then imgui.PopStyleColor(3) end
 end
 
+-- Auto-initialise ctx.party_buffs[key_name] with every current party member
+-- enabled, the first time this key is touched. Pulled out of
+-- render_party_selection so the web bridge can call it too: is_wake_allowed
+-- (lib/actions/status_removal.lua) is table-level opt-in -- an ABSENT
+-- sub-table allows every target, but once the table exists at all, only a key
+-- explicitly true stays allowed. render_party_selection's first render creates
+-- that sub-table pre-filled with everyone on, which is what keeps the
+-- invariant true; a browser click that creates an empty table with only the
+-- clicked key set would otherwise silently turn every other slot off. Exported
+-- so both paths run the identical seed rather than risking drift between two
+-- copies of it.
+function ui_components.seed_party_selection(ctx, key_name, include_self)
+    if include_self == nil then include_self = true end
+    if ctx.party_buffs[key_name] then return end
+
+    ctx.party_buffs[key_name] = {}
+    if include_self then
+        ctx.party_buffs[key_name][0] = true
+    end
+    local ps = common.get_party_size()
+    for i = 1, math.min(ps - 1, 5) do
+        ctx.party_buffs[key_name][i] = true
+    end
+    -- Persist
+    ctx.settings.party_buffs = ctx.settings.party_buffs or {}
+    ctx.settings.party_buffs[key_name] = {}
+    for k, v in pairs(ctx.party_buffs[key_name]) do
+        if type(k) == 'number' and k <= 5 then
+            ctx.settings.party_buffs[key_name][k] = v
+        end
+    end
+    if ctx.save_callback then ctx.save_callback() end
+end
+
 -- Render party selection buttons for a feature (debuff removal, wake, etc.)
 -- Provides a row of [ME] [P1] [P2]... [B0] [C0]... [T1]... toggle buttons.
 -- Reuses ctx.party_buffs[key_name][party_index] for state storage.
@@ -2931,26 +2965,7 @@ end
 function ui_components.render_party_selection(ctx, key_name, show_outside, include_self)
     if include_self == nil then include_self = true end
 
-    -- Auto-initialise on first render: enable all current party members
-    if not ctx.party_buffs[key_name] then
-        ctx.party_buffs[key_name] = {}
-        if include_self then
-            ctx.party_buffs[key_name][0] = true
-        end
-        local ps = common.get_party_size()
-        for i = 1, math.min(ps - 1, 5) do
-            ctx.party_buffs[key_name][i] = true
-        end
-        -- Persist
-        ctx.settings.party_buffs = ctx.settings.party_buffs or {}
-        ctx.settings.party_buffs[key_name] = {}
-        for k, v in pairs(ctx.party_buffs[key_name]) do
-            if type(k) == 'number' and k <= 5 then
-                ctx.settings.party_buffs[key_name][k] = v
-            end
-        end
-        if ctx.save_callback then ctx.save_callback() end
-    end
+    ui_components.seed_party_selection(ctx, key_name, include_self)
 
     local function is_sel(index)
         return ctx.party_buffs[key_name][index] == true
@@ -3256,6 +3271,20 @@ end
 
 function ui_components.toggle_group_party_buff(ctx, group_name, party_index, enabled)
     toggle_group_party_buff(ctx, group_name, party_index, enabled)
+end
+
+-- Session-only counterpart to toggle_party_buff/toggle_group_party_buff, for the
+-- two heal-group target rows only (Group Targets / AOE Targets). Those two are
+-- deliberately never persisted -- see the comment on render_heal_group_selection
+-- -- so a browser click has to land on the exact same write render_heal_group_
+-- selection's own on_click does: ctx.party_buffs only, no ctx.settings write, no
+-- disabled_ key, no save. Routing these two through toggle_party_buff instead
+-- (which does all three) would seed a settings.party_buffs.heal_group the game
+-- can never turn back off, since the in-game button only ever touches the
+-- session mirror.
+function ui_components.toggle_heal_group_target(ctx, key_name, target_index, enabled)
+    ctx.party_buffs[key_name] = ctx.party_buffs[key_name] or {}
+    ctx.party_buffs[key_name][target_index] = enabled
 end
 
 return ui_components

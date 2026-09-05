@@ -17,7 +17,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `response.txt`. There is no socket and no server: the browser holds a File
   System Access grant on the addon's own config folder, and addressing a
   character is writing to that character's folder. `/sk webui folder` prints the
-  path to point the app at; `/sk webui open` opens the app.
+  path to point the app at; `/sk webui open` opens the address in the
+  per-character `webui_url` setting, and `/sk webui url <address>` changes it.
+  The built-in default (`https://sidekick.workers.dev`) is only a placeholder:
+  `wrangler.jsonc` names the worker but declares no route and no custom domain,
+  so `wrangler deploy` actually publishes to
+  `sidekick.<account-subdomain>.workers.dev`, and the subdomain is specific to
+  whichever Cloudflare account it was deployed under -- this repo has no way to
+  know it, so each player has to point `open` at their own with `/sk webui url`
+  once.
 - **Web app.** A hosted progressive web app (Chromium only — the File System
   Access API does not exist in Firefox or Safari) that draws the config window
   from the schema the addon exports: the same sections in the same order, with

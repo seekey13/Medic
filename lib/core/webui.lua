@@ -238,6 +238,14 @@ function webui.apply(parsed, ctx)
     for _, call in ipairs(planned) do
         if call.kind == 'set' then
             ctx.settings[call.key] = call.value
+            -- Parity with lib/ui/panel.lua's Multisend Follow checkbox: turning
+            -- it off in game also clears a stale Attack Range. Dormant while
+            -- Multisend is off, but skipping this from the browser would
+            -- silently re-arm that movement behaviour the moment it is
+            -- switched back on.
+            if call.key == 'multisend_follow' and call.value == false then
+                ctx.settings.attack_range = 'Off'
+            end
             dirty = true
         elseif call.kind == 'ability' then
             ctx.toggles.ability(call.name, call.group, call.value)
@@ -496,9 +504,24 @@ local function poll(deps, dir, built)
                 end
             end,
             buff = function(name, is_group, slot, on)
-                if is_group then
+                if name == 'heal_group' or name == 'heal_aoe_group' then
+                    -- Session-only rows (render_heal_group_selection never
+                    -- writes settings): must not go through toggle_party_buff,
+                    -- which would persist a value the in-game button can never
+                    -- write back and never read again.
+                    ui.toggle_heal_group_target(ctx, name, slot, on)
+                elseif is_group then
                     ui.toggle_group_party_buff(ctx, name, slot, on)
                 else
+                    if name == 'wake' then
+                        -- Seed the table-level opt-in the same way the in-game
+                        -- first render does, before applying the click -- see
+                        -- ui.seed_party_selection. Without this, the browser's
+                        -- first OFF click on any slot would materialise the
+                        -- sub-table with only that key set, silently turning
+                        -- every other party member's wake removal off too.
+                        ui.seed_party_selection(ctx, name, false)
+                    end
                     ui.toggle_party_buff(ctx, name, slot, on)
                 end
             end,
@@ -574,7 +597,13 @@ local function do_tick(deps)
         if poll(deps, dir, built) then
             -- A change just landed; write the snapshot back on the next tick
             -- rather than making the browser wait a full second to see it.
+            -- next_poll gets the same reset, not just next_state: otherwise
+            -- the two clocks fall out of phase (next_state re-anchors to
+            -- "now" on the very next tick, next_poll stays on its old
+            -- schedule) and build_snapshot ends up running twice a second,
+            -- forever, once they've drifted apart.
             next_state = 0
+            next_poll = 0
             last_state = nil
         end
     end

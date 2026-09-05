@@ -61,6 +61,9 @@ local ui_panel  = require('lib.ui.panel')
 -- State
 local current_main_job_id = nil
 local current_sub_job_id = nil
+-- '<Name>_<ServerId>' of the character addon_settings/job_def are currently
+-- loaded for -- see setup_job's character-switch guard.
+local current_character_key = nil
 local job_def = nil  -- Merged job definition
 local addon_settings = nil
 local is_loaded = false
@@ -69,6 +72,13 @@ local last_job_id = nil
 local last_sub_job_id = nil
 local last_level = nil
 local last_unsupported_warning = nil  -- Track last unsupported job warning to prevent spam
+
+-- Placeholder default for webui_url (below): wrangler.jsonc names the worker
+-- 'sidekick' with no route and no custom domain, so `wrangler deploy` actually
+-- publishes to sidekick.<account-subdomain>.workers.dev -- a subdomain specific
+-- to whichever Cloudflare account it was deployed under, which this repo has
+-- no way to know. /sk webui url lets each player point 'open' at their own.
+local DEFAULT_WEBUI_URL = 'https://sidekick.workers.dev'
 
 -- Settings file path
 local default_settings = T{
@@ -121,6 +131,10 @@ local default_settings = T{
     -- character's config to disk for the browser to read, which nobody who has
     -- not asked for it should be paying for.
     webui_enabled = false,
+    -- Address /sk webui open launches. Per-character (not global) so each
+    -- player can point it at wherever they actually deployed the worker; see
+    -- DEFAULT_WEBUI_URL above for why the built-in default may not resolve.
+    webui_url = DEFAULT_WEBUI_URL,
 }
 
 -- Range management state
@@ -423,10 +437,29 @@ local function setup_job()
         return
     end
     
-    if main_job_id == current_main_job_id and sub_job_id == current_sub_job_id and job_def then
+    -- Same job/subjob is not the same CHARACTER: switching at character select
+    -- between two characters who happen to share a job (and are at the same
+    -- level) looks identical to "already loaded" by job ids alone, which would
+    -- leave addon_settings/job_def bound to the PREVIOUS character while the
+    -- game is now running the new one. character_key is the same
+    -- '<Name>_<ServerId>' identity webui.tick uses to pick a character's own
+    -- state.json folder -- without this check the web UI would show and let
+    -- the player edit character B's config under character A's name. nil
+    -- (mid-zone, no player in the snapshot yet) never counts as a change.
+    local character_key = webui.character_key()
+    local character_changed = character_key ~= nil and character_key ~= current_character_key
+
+    if main_job_id == current_main_job_id and sub_job_id == current_sub_job_id
+        and job_def and not character_changed then
         return  -- Already loaded
     end
-    
+
+    if character_changed and current_character_key then
+        common.debugf('Character change detected (%s -> %s); reloading settings.',
+            current_character_key, character_key)
+    end
+    current_character_key = character_key or current_character_key
+
     -- Track job change
     if current_main_job_id and (current_main_job_id ~= main_job_id or current_sub_job_id ~= sub_job_id) then
         local old_job_str = common.get_job_name(current_main_job_id)
@@ -870,6 +903,15 @@ ashita.events.register('d3d_present', 'sidekick_render', function()
         end
 
         webui.set_enabled(addon_settings.webui_enabled == true)
+
+        -- Unconditional, unlike the two calls inside webui.lua: those only run
+        -- while the web UI feature is on, so with it off (the default) a
+        -- session that never opened /sidekick would still never hydrate the
+        -- Buffs/Geo/Sleep Removal/Debuff Removal target mirror. This is the
+        -- first tick settings exist for ANY session, web UI or not.
+        -- hydrate_party_buffs' own guard (only while the mirror is still
+        -- empty) makes calling it again from render()/webui.tick harmless.
+        ui_config.hydrate_party_buffs(addon_settings)
     end
 
     local save_settings_callback = function()
@@ -898,8 +940,13 @@ ashita.events.register('d3d_present', 'sidekick_render', function()
     party_share.tick()
 
     -- Web UI bridge: snapshot out, requests in. Self-throttled, and inert
-    -- unless /sk webui is on.
-    if addon_settings then
+    -- unless /sk webui is on -- gated here too, not just inside webui.tick's
+    -- do_tick: building `status` below reaches common.can_attack() in the
+    -- normal case, an uncached ashita.memory.find plus a linear zone-list
+    -- walk, and allocates a fresh deps table and closures every frame. Paying
+    -- that every frame for every user just for do_tick to throw the result
+    -- away when the feature is off would tax everyone for an opt-in feature.
+    if addon_settings and webui.is_enabled() then
         local status = 'Automation stopped'
         if automation_enabled then
             if     common.is_loading() then status = 'Automation loading'
@@ -1249,7 +1296,7 @@ ashita.events.register('command', 'sidekick_command', function(e)
         common.printf('  /sidekick toggle - Toggle automation on/off')
         common.printf('  /sidekick config - Show configuration UI')
         common.printf('  /sidekick widget - Toggle the floating profile/job + Start/Stop widget')
-        common.printf('  /sidekick webui [on|off|folder|open] - Web UI bridge for the browser app')
+        common.printf('  /sidekick webui [on|off|folder|open|url <address>] - Web UI bridge for the browser app')
         common.printf('  /sidekick focus <index> - Set focus target (0-5, party member index)')
         common.printf('  /sidekick focus clear - Clear focus target')
         common.printf('  /sidekick addtarget - Track current target for automation')
@@ -1303,12 +1350,31 @@ ashita.events.register('command', 'sidekick_command', function(e)
         elseif sub == 'folder' then
             common.printf('%s', webui.root_dir())
             common.printf('Choose that folder in the web app.')
+        elseif sub == 'url' then
+            -- args[4] is whatever the player typed after 'url', verbatim -- a
+            -- URL has no spaces, so e.command:args() splitting on whitespace
+            -- is not a concern here. This string reaches os.execute inside a
+            -- quoted start "" "<url>" command below, so a stray " could break
+            -- out of that quoting -- reject it outright rather than escaping it.
+            local url = args[4]
+            if not url or url == '' then
+                common.printf('Usage: /sidekick webui url <http(s)://address>')
+            elseif url:find('"', 1, true) then
+                common.printf('Web UI address cannot contain a " character.')
+            elseif not url:match('^https?://') then
+                common.printf('Web UI address must start with http:// or https://')
+            else
+                addon_settings.webui_url = url
+                settings.save()
+                common.printf('Web UI address set to %s', url)
+            end
         elseif sub == 'open' then
-            os.execute('start "" "https://sidekick.workers.dev"')
+            os.execute(string.format('start "" "%s"', addon_settings.webui_url or DEFAULT_WEBUI_URL))
             common.printf('Opening the web interface...')
         else
-            common.printf('Web UI: %s. Usage: /sidekick webui [on|off|folder|open]',
-                webui.is_enabled() and 'enabled' or 'disabled')
+            common.printf('Web UI: %s (%s). Usage: /sidekick webui [on|off|folder|open|url <address>]',
+                webui.is_enabled() and 'enabled' or 'disabled',
+                addon_settings.webui_url or DEFAULT_WEBUI_URL)
         end
 
     elseif cmd == 'focus' then
