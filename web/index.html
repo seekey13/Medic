@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Sidekick</title>
+    <link rel="icon" type="image/svg+xml" href="assets/Sidekick.svg">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@mdi/font@7.4.47/css/materialdesignicons.min.css">
+    <link rel="stylesheet" href="styles.css">
+    <link rel="manifest" href="manifest.webmanifest">
+    <meta name="theme-color" content="#0f172a">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+</head>
+<body>
+    <div class="connect-overlay" id="connectOverlay">
+        <div class="connect-card">
+            <img src="assets/Sidekick.svg" alt="Sidekick" width="50" height="50">
+            <h2>Connect your Sidekick folder</h2>
+            <p id="connectMessage">
+                Sidekick reads your config straight off your own disk. Nothing is
+                stored on this site. Turn the bridge on in game with
+                <code>/sk webui on</code>, then choose your Ashita
+                <code>config\addons\sidekick</code> folder.
+            </p>
+            <button type="button" class="connect-button" id="connectButton">Choose folder</button>
+            <p class="connect-hint" id="connectHint">
+                Type <code>/sk webui folder</code> in game to see the exact path.
+            </p>
+        </div>
+    </div>
+
+    <div class="header-container">
+        <div class="title-container">
+            <h1>Sidekick</h1>
+            <span class="subtitle">Support Job Automation Framework</span>
+        </div>
+        <div class="character-buttons" id="characterButtons"></div>
+        <div class="header-right">
+            <i class="mdi mdi-cog settings-icon" id="settingsIcon" title="Settings"></i>
+            <div class="settings-panel" id="settingsPanel">
+                <div class="settings-panel-header">
+                    <span class="settings-panel-title">Settings</span>
+                </div>
+                <div id="globals"></div>
+                <p class="settings-hint">
+                    Job-independent settings, the same ones <code>/sk panel</code>
+                    holds in game. Changes reach the client within a second.
+                </p>
+            </div>
+        </div>
+    </div>
+
+    <div id="content">
+        <div class="header-block" id="headerBlock"></div>
+        <div class="sections" id="sections">
+            <div class="loading">Waiting for a character&hellip;</div>
+        </div>
+    </div>
+
+    <div class="toast" id="toast" role="status"></div>
+    <div class="update-toast" id="updateToast" role="status">
+        <span>A new version of Sidekick is ready.</span>
+        <button type="button" class="update-button" id="updateButton">Reload</button>
+    </div>
+
+    <script src="protocol.js"></script>
+    <script src="fsbridge.js"></script>
+    <script src="render.js"></script>
+    <script src="app.js"></script>
+</body>
+</html>
