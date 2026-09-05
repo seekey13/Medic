@@ -53,13 +53,21 @@
 
     // A redraw replaces the section list wholesale, so the details elements the
     // user opened by hand would snap shut on every poll. Carry their state over.
+    // We also track whether any sections existed before redraw: if the prior render
+    // produced sections, restore what was open; if there was no prior render,
+    // let the schema's enabled/open default take effect. We cannot distinguish
+    // "first render" from "user closed all sections" by checking the open set alone.
     function openSectionKeys() {
         const open = new Set();
-        for (const details of document.querySelectorAll('#sections details[open]')) {
-            const key = details.querySelector('input[data-key]')?.dataset.key;
-            if (key) open.add(key);
+        const allDetails = document.querySelectorAll('#sections details');
+        const hadSections = allDetails.length > 0;
+        for (const details of allDetails) {
+            if (details.open) {
+                const key = details.querySelector('input[data-key]')?.dataset.key;
+                if (key) open.add(key);
+            }
         }
-        return open;
+        return { keys: open, hadSections };
     }
 
     function render() {
@@ -74,16 +82,20 @@
             return;
         }
 
-        const wasOpen = openSectionKeys();
+        const { keys: wasOpen, hadSections } = openSectionKeys();
         el('headerBlock').innerHTML = SidekickRender.headerHtml(state);
         el('sections').innerHTML = SidekickRender.sectionsHtml(state.sections);
         el('globals').innerHTML = SidekickRender.globalsHtml(state.globals);
 
         // Restore what the user had open, over the schema's own enabled/open
-        // default -- their last click wins over the addon's suggestion.
-        for (const details of document.querySelectorAll('#sections details')) {
-            const key = details.querySelector('input[data-key]')?.dataset.key;
-            if (key && wasOpen.size) details.open = wasOpen.has(key);
+        // default -- their last click wins over the addon's suggestion. Only
+        // restore if a prior render existed (hadSections); on first render, let
+        // the schema's default guide the open state.
+        if (hadSections) {
+            for (const details of document.querySelectorAll('#sections details')) {
+                const key = details.querySelector('input[data-key]')?.dataset.key;
+                if (key) details.open = wasOpen.has(key);
+            }
         }
     }
 
@@ -136,8 +148,16 @@
 
         // Clicking the enable checkbox inside a summary must not also toggle the
         // details open -- the checkbox is the feature switch, the label is the
-        // collapse.
-        if (node.type === 'checkbox' && node.closest('summary')) event.preventDefault();
+        // collapse. A checkbox's checked state flips before the click event fires,
+        // and cancelling the event makes the browser revert it after dispatch finishes.
+        // Capture the intended value and reassert it in a macrotask so it sticks.
+        if (node.type === 'checkbox' && node.closest('summary')) {
+            const intendedValue = node.checked;
+            event.preventDefault();
+            // Must be async (macrotask) to run after the browser's canceled activation
+            // steps revert the checkbox. Reasserting it synchronously would have no effect.
+            setTimeout(() => { node.checked = intendedValue; }, 0);
+        }
 
         const op = opFor(node);
         if (op) send([op]);
