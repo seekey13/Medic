@@ -5,6 +5,54 @@ All notable changes to Sidekick will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.9.0] - 2026-09-05
+
+### Added
+
+- **Web UI bridge (`/sk webui`).** Off by default. When on, the addon writes a
+  snapshot of this character's config to
+  `config\addons\sidekick\<Name>_<ServerId>\state.json` once a second (only when
+  something actually changed), a liveness `heartbeat.json` every ten seconds, and
+  polls `request.txt` for instructions from the web app, answering in
+  `response.txt`. There is no socket and no server: the browser holds a File
+  System Access grant on the addon's own config folder, and addressing a
+  character is writing to that character's folder. `/sk webui folder` prints the
+  path to point the app at; `/sk webui open` opens the app.
+- **Web app.** A hosted progressive web app (Chromium only — the File System
+  Access API does not exist in Firefox or Safari) that draws the config window
+  from the schema the addon exports: the same sections in the same order, with
+  the same enable checkboxes, ability rows, ME/P1-P5 buff target buttons and
+  sliders. A row of character buttons switches between every character logged in
+  on the PC, with a live/offline dot driven by the heartbeat. The gear icon opens
+  the job-independent settings that live in `/sk panel` in game — Multisend
+  Follow, Hold AOE for Group, AFK Sleep and its timeout, Cure and Waltz potency,
+  UI opacity, Load stopped, Stop after zone, section display mode, and Attack
+  Range when Multisend Follow is on. `/sk panel` itself is not reproduced.
+- **Schema export (`lib/ui/schema.lua`).** The config window as data, mirroring
+  `lib/ui/config.lua`'s order, labels, enable keys, defaults and visibility
+  rules. It is the contract in both directions: the browser draws what is in it,
+  and the addon refuses to set anything that is not in it — so a control the
+  in-game window would not draw right now is not settable right now either.
+
+### Changed
+
+- Ability, group and buff-target changes from the browser go through the same
+  toggle functions an in-game click uses, so the two-song limit, exclusive Geo
+  targets and the `disabled_` key each row keeps in sync behave identically from
+  either side.
+
+### Fixed
+
+- **Party-buff target selections now hydrate even if the config window is
+  never opened** (`ui_config.hydrate_party_buffs`, `lib/ui/config.lua`,
+  `lib/core/webui.lua`): the Buffs, Geo, Sleep Removal and Debuff Removal target
+  rows were loaded from `settings.party_buffs` only inside `render()`, which
+  runs solely while the config window is on screen, so a session that never
+  opened `/sidekick` had those buffs silently not fire at all even though the
+  saved targets were there. Hydration is now a shared function called from both
+  `render()` and the web UI bridge's tick, so it happens regardless of whether
+  the window — in game or in the browser — has ever been opened this session.
+
 ## [2.8.0] - 2026-08-31
 
 ### Added

@@ -435,6 +435,34 @@ Tracked targets are session-only (an addon reload clears them) but survive zonin
 re-resolves the entity by server id, so a zoned-out target simply goes `is_active = false` until it
 is visible again.
 
+### webui.lua — Web UI Bridge
+
+Off unless `/sk webui on`. Modelled on XIIM's `modules/bridge.lua`: a file-based
+request channel with no socket and no server.
+
+    config\addons\sidekick\<CharacterKey>\state.json      addon -> browser (JSON)
+    config\addons\sidekick\<CharacterKey>\heartbeat.json  addon -> browser (JSON)
+    config\addons\sidekick\<CharacterKey>\request.txt     browser -> addon (lines)
+    config\addons\sidekick\<CharacterKey>\response.txt    addon -> browser (lines)
+
+`webui.tick` runs from `d3d_present` and self-throttles: the snapshot is rebuilt
+at most once a second and written only when its encoded bytes moved (the JSON
+encoder sorts object keys precisely so that comparison works), requests are
+polled once a second, and the heartbeat is rewritten every ten.
+
+Requests are lines of `|`-separated fields rather than JSON, so the addon needs
+no JSON *parser* for anything a web page wrote — one split covers the grammar.
+Every op is validated against `schema.index` of the snapshot the browser was
+last shown, and the whole request is validated before any of it is applied, so a
+request that is wrong halfway through changes nothing. Rows are toggled through
+the exported `ui_components.toggle_*` functions, never by writing `disabled_`
+keys directly: the song limit and the exclusive-target rules live in those
+functions and must not exist twice.
+
+`lib/ui/schema.lua` is the shared description both halves work from, and
+`lib/core/json.lua` is a one-direction encoder — nothing in the addon parses
+JSON.
+
 ### targets.lua
 
 FFI bindings for FFXI target resolution (battle target, scan target, last teller). Ashita utility module.
