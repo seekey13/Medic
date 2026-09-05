@@ -36,6 +36,7 @@ function fakeDir(files = {}, { permission = 'granted' } = {}) {
         files,
         permission,
         async *entries() {
+            if (dir.permission !== 'granted') throw notAllowed();
             for (const entry of Object.entries(files)) yield entry;
         },
         async getDirectoryHandle(name) {
@@ -44,6 +45,7 @@ function fakeDir(files = {}, { permission = 'granted' } = {}) {
             return files[name];
         },
         async getFileHandle(name, opts = {}) {
+            if (dir.permission !== 'granted') throw notAllowed();
             if (!files[name]) {
                 if (!opts.create) throw notFound();
                 files[name] = fakeFile('');
@@ -62,7 +64,10 @@ function fakeDir(files = {}, { permission = 'granted' } = {}) {
                 },
             };
         },
-        async removeEntry(name) { delete files[name]; },
+        async removeEntry(name) {
+            if (dir.permission !== 'granted') throw notAllowed();
+            delete files[name];
+        },
     };
     return dir;
 }
@@ -117,6 +122,28 @@ function snapshot(overrides = {}) {
     assert.strictEqual(read.changed, true,
         'a valid-to-outdated transition did not report a change');
 
+    // A character that stays outdated across polls (no file change at all)
+    // must not re-report the change forever: the caller repaints only when
+    // `changed` is true, and a stale addon build would otherwise force an
+    // unbounded repaint loop for as long as the tab stays open.
+    const steadyOutdated = await bridge.readAllStates(root, cache);
+    assert.deepStrictEqual(steadyOutdated.outdated, ['Seekey_33748'],
+        'a steady-state outdated character stopped being reported as outdated');
+    assert.strictEqual(steadyOutdated.changed, false,
+        'a steady-state outdated character re-reported a change on every poll');
+
+    // Recovering from outdated (the player updated their addon) must still
+    // surface as a change, and the character must stop being listed as
+    // outdated once it is valid again.
+    root.files.Seekey_33748.files['state.json'] = fakeFile(snapshot());
+    const recovered = await bridge.readAllStates(root, cache);
+    assert.deepStrictEqual(recovered.outdated, [],
+        'a recovered character was still reported outdated');
+    assert.strictEqual(recovered.states.Seekey_33748.character, 'Seekey',
+        'a recovered character was not rendered');
+    assert.strictEqual(recovered.changed, true,
+        'an outdated-to-valid transition did not report a change');
+
     // Same failure mode, but on the very first read: the character was
     // already outdated before this page ever saw it. There is no prior state
     // to "transition" away from, so this path has to set `changed` on its own
@@ -133,6 +160,22 @@ function snapshot(overrides = {}) {
         'an already-outdated first read was rendered anyway');
     assert.strictEqual(freshRead.changed, true,
         'an already-outdated first read did not report a change');
+
+    // An outdated character whose folder disappears entirely must still be
+    // swept out of the cache and reported as a change, exactly like a valid
+    // one -- losing track of it silently would leave a stale "update your
+    // addon" banner with nothing behind it to confirm.
+    const dropCache = new Map();
+    const dropRoot = fakeDir({
+        Seekey_33748: fakeDir({ 'state.json': fakeFile(snapshot({ v: 99 })) }),
+    });
+    await bridge.readAllStates(dropRoot, dropCache);
+    delete dropRoot.files.Seekey_33748;
+    const dropped = await bridge.readAllStates(dropRoot, dropCache);
+    assert.deepStrictEqual(dropped.outdated, [],
+        'an outdated character removed from disk was still reported outdated');
+    assert.strictEqual(dropped.changed, true,
+        'an outdated character removed from disk did not report a change');
 
     // Truncated JSON means we caught the addon mid-write; keep the last good one.
     const cache2 = new Map();
@@ -188,6 +231,24 @@ function snapshot(overrides = {}) {
     assert.ok(/permission/i.test(denied.err || ''),
         `a revoked permission was not distinguished from a missing folder: ${denied.err}`);
 
+    // The fake's permission flag must behave like the real API: once
+    // revoked, every call on the handle fails, not only getDirectoryHandle.
+    // Revoke it only after the character directory handle is already in
+    // hand, so this actually exercises getFileHandle/removeEntry/entries()
+    // instead of the getDirectoryHandle check every other test relies on.
+    const revokeAfterOpenRoot = fakeDir({
+        Seekey_33748: fakeDir({ 'state.json': fakeFile(snapshot()) }),
+    });
+    const revokeAfterOpenDir = revokeAfterOpenRoot.files.Seekey_33748;
+    revokeAfterOpenDir.permission = 'denied';
+    await assert.rejects(() => revokeAfterOpenDir.getFileHandle('state.json'),
+        { name: 'NotAllowedError' }, 'getFileHandle ignored a revoked permission');
+    await assert.rejects(() => revokeAfterOpenDir.removeEntry('state.json'),
+        { name: 'NotAllowedError' }, 'removeEntry ignored a revoked permission');
+    await assert.rejects(async () => {
+        for await (const entry of revokeAfterOpenDir.entries()) { void entry; }
+    }, { name: 'NotAllowedError' }, 'entries() ignored a revoked permission');
+
     // Two tabs can both pass the check-then-write gap in sendRequest and one
     // clobbers the other's request.txt before either write lands. The loser
     // must not report queued:true on timeout -- its bytes never reached disk,
@@ -217,6 +278,30 @@ function snapshot(overrides = {}) {
     assert.strictEqual(raced2.ok, false);
     assert.notStrictEqual(raced2.queued, true,
         'a request removed from disk by a racing tab falsely reported queued:true');
+
+    // The post-timeout re-read of request.txt is itself fallible -- a
+    // permission revocation or a delete can land in the exact window between
+    // the deadline and this confirmation check. Make that specific re-read
+    // (and only it) fail, without disturbing the two earlier, unrelated
+    // request.txt look-ups that precede it (the "already queued" check and
+    // the create-on-write): a call-count trap is deterministic, where a
+    // timer racing the poll loop would not be.
+    const flakyRoot = fakeDir({ Seekey_33748: fakeDir({}) });
+    const flakyDir = flakyRoot.files.Seekey_33748;
+    const realFlakyGetFileHandle = flakyDir.getFileHandle.bind(flakyDir);
+    let requestTxtCalls = 0;
+    flakyDir.getFileHandle = async (name, opts = {}) => {
+        if (name === 'request.txt') {
+            requestTxtCalls += 1;
+            if (requestTxtCalls === 3) throw notAllowed();
+        }
+        return realFlakyGetFileHandle(name, opts);
+    };
+    const flaky = await bridge.request(flakyRoot, 'Seekey_33748',
+        [['cmd', 'stop']], { pollMs: 5, timeoutMs: 40 });
+    assert.strictEqual(flaky.ok, false);
+    assert.notStrictEqual(flaky.queued, true,
+        'a failed post-timeout re-read falsely reported queued:true');
 
     // The per-character queue: two overlapping calls for the same key must be
     // serialised (the second only starts once the first has fully settled),

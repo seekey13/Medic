@@ -138,7 +138,6 @@ const SidekickBridge = (() => {
      */
     async function readAllStates(root, cache) {
         const seen = new Set();
-        const outdated = [];
         let changed = false;
 
         for await (const [name, handle] of root.entries()) {
@@ -150,7 +149,7 @@ const SidekickBridge = (() => {
 
             let entry = cache.get(name);
             if (!entry) {
-                entry = { stateModified: null, state: null };
+                entry = { stateModified: null, state: null, outdated: false };
                 cache.set(name, entry);
             }
 
@@ -167,17 +166,26 @@ const SidekickBridge = (() => {
                     // Guessing at a layout we do not know draws an empty config
                     // and blames the game for it. This is itself a change worth
                     // repainting for -- it is how "update your addon" gets on
-                    // screen at all -- and the sweep loop below cannot catch it
-                    // as a removal, because seen/cache are cleared right here.
-                    outdated.push(name);
-                    seen.delete(name);
-                    cache.delete(name);
-                    changed = true;
+                    // screen at all. But the entry must stay in the cache (not
+                    // be deleted) so a character that is *still* outdated on
+                    // the next poll is recognised as no change: deleting it
+                    // would make every future mtime look new and re-trigger
+                    // `changed` forever, which is the exact repaint storm the
+                    // mtime cache exists to prevent. `outdated` itself is
+                    // rebuilt from the cache below every call, so it keeps
+                    // reporting the character for as long as it stays bad.
+                    entry.state = null;
+                    entry.stateModified = file.lastModified;
+                    if (!entry.outdated) {
+                        entry.outdated = true;
+                        changed = true;
+                    }
                     continue;
                 }
 
                 entry.state = snapshot;
                 entry.stateModified = file.lastModified;
+                entry.outdated = false;
                 changed = true;
             }
 
@@ -199,8 +207,10 @@ const SidekickBridge = (() => {
         }
 
         const states = {};
+        const outdated = [];
         for (const [key, entry] of cache) {
             if (entry.state) states[key] = entry.state;
+            if (entry.outdated) outdated.push(key);
         }
         return { states, changed, outdated };
     }
@@ -290,18 +300,28 @@ const SidekickBridge = (() => {
         // holds someone else's id, this call's bytes never reached disk and
         // there is nothing left to run at login -- saying otherwise would be
         // a lie the player acts on.
-        const survivor = await getFileHandle(dir, 'request.txt');
-        if (survivor) {
-            const text = await (await survivor.getFile()).text();
-            const match = /^id\|(.+)$/m.exec(text);
-            if (match && match[1] === id) {
-                return {
-                    ok: false,
-                    queued: true,
-                    err: 'No reply from the game client. The change is queued and will apply '
-                        + 'next time this character logs in with /sk webui on.',
-                };
+        //
+        // This re-read is itself fallible -- a permission revocation or a
+        // delete can land in the exact window between the deadline and this
+        // check -- so it gets the same conservative treatment as a foreign
+        // id: report the failure, but do not claim queued:true for something
+        // that could not be confirmed.
+        try {
+            const survivor = await getFileHandle(dir, 'request.txt');
+            if (survivor) {
+                const text = await (await survivor.getFile()).text();
+                const match = /^id\|(.+)$/m.exec(text);
+                if (match && match[1] === id) {
+                    return {
+                        ok: false,
+                        queued: true,
+                        err: 'No reply from the game client. The change is queued and will apply '
+                            + 'next time this character logs in with /sk webui on.',
+                    };
+                }
             }
+        } catch (err) {
+            // Fall through to the honest-failure return below.
         }
 
         return {
@@ -311,13 +331,19 @@ const SidekickBridge = (() => {
         };
     }
 
-    return {
+    const api = {
         isSupported, pickFolder, saveHandle, loadHandle, ensurePermission,
         readAllStates, request, STATE_FORMAT,
-        // Test-only: lets test-fsbridge.js confirm the per-character queue
-        // does not leak an entry once a call settles. Not meant for page code.
-        _inFlightSize: () => inFlight.size,
     };
-})();
 
-if (typeof module !== 'undefined') { module.exports = SidekickBridge; }
+    if (typeof module !== 'undefined') {
+        module.exports = api;
+        // Test-only: lets test-fsbridge.js confirm the per-character queue
+        // does not leak an entry once a call settles. Attached to
+        // module.exports directly (not the object above) so it never rides
+        // along on the browser global -- page code has no business calling it.
+        module.exports._inFlightSize = () => inFlight.size;
+    }
+
+    return api;
+})();
