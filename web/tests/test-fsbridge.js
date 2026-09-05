@@ -22,14 +22,24 @@ function fakeFile(text) {
     return { kind: 'file', text, lastModified: ++clock };
 }
 
-function fakeDir(files = {}) {
-    return {
+function notAllowed() {
+    return Object.assign(new Error('permission denied'), { name: 'NotAllowedError' });
+}
+
+// `permission` mirrors the real API: a handle whose grant was revoked mid-
+// session throws NotAllowedError from calls made on it (root.getDirectoryHandle
+// here), not NotFoundError -- a distinct failure fsbridge is expected to tell
+// apart from "no such folder".
+function fakeDir(files = {}, { permission = 'granted' } = {}) {
+    const dir = {
         kind: 'directory',
         files,
+        permission,
         async *entries() {
             for (const entry of Object.entries(files)) yield entry;
         },
         async getDirectoryHandle(name) {
+            if (dir.permission !== 'granted') throw notAllowed();
             if (!files[name] || files[name].kind !== 'directory') throw notFound();
             return files[name];
         },
@@ -54,6 +64,7 @@ function fakeDir(files = {}) {
         },
         async removeEntry(name) { delete files[name]; },
     };
+    return dir;
 }
 
 function snapshot(overrides = {}) {
@@ -95,10 +106,33 @@ function snapshot(overrides = {}) {
 
     // A snapshot in a layout this page does not know is an addon that needs
     // updating, which is worth saying rather than rendering as an empty config.
+    // That is only worth anything on screen if it actually repaints: a caller
+    // gates its re-render on `changed`, exactly like this file's own comments
+    // describe for the mtime cache, so a valid-to-outdated transition that
+    // does not set `changed` would never surface the warning.
     root.files.Seekey_33748.files['state.json'] = fakeFile(snapshot({ v: 99 }));
     read = await bridge.readAllStates(root, cache);
     assert.deepStrictEqual(read.outdated, ['Seekey_33748'], 'a future format was not reported');
     assert.deepStrictEqual(Object.keys(read.states), [], 'a future format was rendered anyway');
+    assert.strictEqual(read.changed, true,
+        'a valid-to-outdated transition did not report a change');
+
+    // Same failure mode, but on the very first read: the character was
+    // already outdated before this page ever saw it. There is no prior state
+    // to "transition" away from, so this path has to set `changed` on its own
+    // rather than relying on the sweep loop, which cannot see a key that was
+    // deleted from `seen`/`cache` inside the same iteration that added it.
+    const freshCache = new Map();
+    const freshRoot = fakeDir({
+        Seekey_33748: fakeDir({ 'state.json': fakeFile(snapshot({ v: 99 })) }),
+    });
+    const freshRead = await bridge.readAllStates(freshRoot, freshCache);
+    assert.deepStrictEqual(freshRead.outdated, ['Seekey_33748'],
+        'an already-outdated first read was not reported');
+    assert.deepStrictEqual(Object.keys(freshRead.states), [],
+        'an already-outdated first read was rendered anyway');
+    assert.strictEqual(freshRead.changed, true,
+        'an already-outdated first read did not report a change');
 
     // Truncated JSON means we caught the addon mid-write; keep the last good one.
     const cache2 = new Map();
@@ -145,6 +179,76 @@ function snapshot(overrides = {}) {
         [['cmd', 'stop']], { pollMs: 5, timeoutMs: 40 });
     assert.strictEqual(timedOut.ok, false);
     assert.strictEqual(timedOut.queued, true, 'a timeout did not report the request as queued');
+
+    // A revoked permission is not the same failure as no folder at all: the
+    // fix for it lives in a browser re-grant, not in picking a new folder.
+    const deniedRoot = fakeDir({}, { permission: 'denied' });
+    const denied = await bridge.request(deniedRoot, 'Seekey_33748', [['cmd', 'stop']]);
+    assert.strictEqual(denied.ok, false);
+    assert.ok(/permission/i.test(denied.err || ''),
+        `a revoked permission was not distinguished from a missing folder: ${denied.err}`);
+
+    // Two tabs can both pass the check-then-write gap in sendRequest and one
+    // clobbers the other's request.txt before either write lands. The loser
+    // must not report queued:true on timeout -- its bytes never reached disk,
+    // so there is nothing left to run at the character's next login.
+    const raceRoot = fakeDir({ Seekey_33748: fakeDir({}) });
+    const raceDir = raceRoot.files.Seekey_33748;
+    // No responder runs in this scenario -- the point is what a losing call
+    // reports about *why* it never heard back, not a real reply. Simulate the
+    // winning tab's write landing shortly after ours, mid-poll.
+    setTimeout(() => {
+        raceDir.files['request.txt'] = fakeFile('id|other-tab-id\nts|1\ncmd|start\n');
+    }, 20);
+    const raced = await bridge.request(raceRoot, 'Seekey_33748',
+        [['cmd', 'stop']], { pollMs: 5, timeoutMs: 100 });
+    assert.strictEqual(raced.ok, false);
+    assert.notStrictEqual(raced.queued, true,
+        'a request clobbered by a racing tab falsely reported queued:true');
+
+    // Same race, but the winning tab's request has already been picked up and
+    // removed by the time we time out -- not just overwritten with a foreign
+    // id. Still not "queued": there is nothing of ours left on disk.
+    const raceRoot2 = fakeDir({ Seekey_33748: fakeDir({}) });
+    const raceDir2 = raceRoot2.files.Seekey_33748;
+    setTimeout(() => { delete raceDir2.files['request.txt']; }, 20);
+    const raced2 = await bridge.request(raceRoot2, 'Seekey_33748',
+        [['cmd', 'stop']], { pollMs: 5, timeoutMs: 100 });
+    assert.strictEqual(raced2.ok, false);
+    assert.notStrictEqual(raced2.queued, true,
+        'a request removed from disk by a racing tab falsely reported queued:true');
+
+    // The per-character queue: two overlapping calls for the same key must be
+    // serialised (the second only starts once the first has fully settled),
+    // and the queue must not leak an entry once both are done.
+    const queueRoot = fakeDir({ Seekey_33748: fakeDir({}) });
+    const queueDir = queueRoot.files.Seekey_33748;
+    const answeredIds = [];
+    const queueAnswer = setInterval(() => {
+        const written = queueDir.files['request.txt'];
+        if (!written) return;
+        const reqId = /^id\|(.+)$/m.exec(written.text)[1];
+        answeredIds.push(reqId);
+        delete queueDir.files['request.txt'];
+        queueDir.files['response.txt'] = fakeFile(`id|${reqId}\nok|1\nmsg|Applied 1 change(s)\n`);
+    }, 5);
+
+    // Fired back to back, with neither awaited first: if the second were not
+    // serialised behind the first, it would run concurrently and see the
+    // first's still-on-disk request.txt, tripping the "already queued" guard
+    // instead of getting its own turn.
+    const q1 = bridge.request(queueRoot, 'Seekey_33748', [['cmd', 'start']], { pollMs: 5, timeoutMs: 2000 });
+    const q2 = bridge.request(queueRoot, 'Seekey_33748', [['cmd', 'stop']], { pollMs: 5, timeoutMs: 2000 });
+    const [q1Result, q2Result] = await Promise.all([q1, q2]);
+    clearInterval(queueAnswer);
+
+    assert.strictEqual(q1Result.ok, true, `first overlapping call failed: ${q1Result.err}`);
+    assert.strictEqual(q2Result.ok, true,
+        `second overlapping call was not serialised behind the first: ${q2Result.err}`);
+    assert.strictEqual(answeredIds.length, 2,
+        'both overlapping calls should have been written and answered separately');
+    assert.strictEqual(bridge._inFlightSize(), 0,
+        'the in-flight queue leaked an entry after both overlapping calls settled');
 
     console.log('test-fsbridge.js: OK');
 })().catch((err) => { console.error(err); process.exit(1); });

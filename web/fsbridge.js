@@ -165,10 +165,14 @@ const SidekickBridge = (() => {
 
                 if (snapshot.v !== STATE_FORMAT) {
                     // Guessing at a layout we do not know draws an empty config
-                    // and blames the game for it.
+                    // and blames the game for it. This is itself a change worth
+                    // repainting for -- it is how "update your addon" gets on
+                    // screen at all -- and the sweep loop below cannot catch it
+                    // as a removal, because seen/cache are cleared right here.
                     outdated.push(name);
                     seen.delete(name);
                     cache.delete(name);
+                    changed = true;
                     continue;
                 }
 
@@ -208,9 +212,11 @@ const SidekickBridge = (() => {
     // Requests are serialised per character in this tab. The on-disk check in
     // sendRequest is a check-then-write with a gap, so two callers in the same
     // tick would both pass it and the second would clobber the first.
-    // ponytail: per-tab only. Two tabs on the same folder still race, which the
-    // on-disk check catches most of the time and the addon's id echo catches
-    // the rest.
+    // ponytail: per-tab only. Two tabs on the same folder still race: the
+    // on-disk check above catches most overlaps, and when a clobber slips
+    // through anyway, the timeout path re-reads request.txt and reports an
+    // honest failure -- instead of a queued:true the clobbered call never
+    // actually earned -- unless that file still holds this call's own id.
     const inFlight = new Map();
 
     function request(root, characterKey, ops, options = {}) {
@@ -237,6 +243,9 @@ const SidekickBridge = (() => {
         try {
             dir = await root.getDirectoryHandle(characterKey);
         } catch (err) {
+            if (err && err.name === 'NotAllowedError') {
+                return { ok: false, err: 'Permission to the folder was revoked. Grant access again and retry.' };
+            }
             return { ok: false, err: `No folder for ${characterKey}` };
         }
 
@@ -274,19 +283,40 @@ const SidekickBridge = (() => {
             return reply;
         }
 
-        // The request is still on disk and runs when that client next starts --
-        // saying it failed would be a lie the player acts on.
+        // Timed out. request.txt is still on disk and will run at next login --
+        // unless a racing tab's write clobbered it before either write landed
+        // (the check-then-write gap above). Re-read it and only promise
+        // "queued" if it is still *this* call's request; if it is gone or
+        // holds someone else's id, this call's bytes never reached disk and
+        // there is nothing left to run at login -- saying otherwise would be
+        // a lie the player acts on.
+        const survivor = await getFileHandle(dir, 'request.txt');
+        if (survivor) {
+            const text = await (await survivor.getFile()).text();
+            const match = /^id\|(.+)$/m.exec(text);
+            if (match && match[1] === id) {
+                return {
+                    ok: false,
+                    queued: true,
+                    err: 'No reply from the game client. The change is queued and will apply '
+                        + 'next time this character logs in with /sk webui on.',
+                };
+            }
+        }
+
         return {
             ok: false,
-            queued: true,
-            err: 'No reply from the game client. The change is queued and will apply '
-                + 'next time this character logs in with /sk webui on.',
+            err: 'No reply from the game client, and this request no longer matches what is '
+                + 'queued for this character -- another tab may have overwritten it. Try again.',
         };
     }
 
     return {
         isSupported, pickFolder, saveHandle, loadHandle, ensurePermission,
         readAllStates, request, STATE_FORMAT,
+        // Test-only: lets test-fsbridge.js confirm the per-character queue
+        // does not leak an entry once a call settles. Not meant for page code.
+        _inFlightSize: () => inFlight.size,
     };
 })();
 
