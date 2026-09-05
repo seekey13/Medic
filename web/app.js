@@ -52,25 +52,44 @@
     // --- Rendering ---------------------------------------------------------
 
     // A redraw replaces the section list wholesale, so the details elements the
-    // user opened by hand would snap shut on every poll. Carry their state over.
-    // We also track whether any sections existed before redraw: if the prior render
-    // produced sections, restore what was open; if there was no prior render,
-    // let the schema's enabled/open default take effect. We cannot distinguish
-    // "first render" from "user closed all sections" by checking the open set alone.
-    function openSectionKeys() {
-        const open = new Set();
-        const allDetails = document.querySelectorAll('#sections details');
-        const hadSections = allDetails.length > 0;
-        for (const details of allDetails) {
-            if (details.open) {
-                const key = details.querySelector('input[data-key]')?.dataset.key;
-                if (key) open.add(key);
-            }
+    // user opened or closed by hand would otherwise snap back to the schema's
+    // default on every poll. We remember open/closed state per character, per
+    // section key, so a character's twisty state survives a redraw and a
+    // switch away and back -- without keeping any model of the config itself,
+    // and without persisting any of it past this page load.
+    //
+    // A section key we have no memory of for the active character (first
+    // render ever, or a section that just appeared because a level-up
+    // unlocked an ability) is left alone: the freshly rendered HTML already
+    // carries the schema's own enabled/open default, and we must not force it
+    // either way.
+    const sectionOpenState = new Map(); // charKey -> Map(sectionKey -> open)
+
+    // The character key whose sections are currently sitting in the DOM.
+    // Clicking a character button moves activeKey to the new character
+    // *before* render() runs, so relying on activeKey below would file the
+    // outgoing character's open/closed state under the incoming character's
+    // key. renderedKey lags one render behind activeKey for exactly that call,
+    // which is what lets the snapshot below land on the right character.
+    let renderedKey = null;
+
+    // Read the open/closed state of whatever is currently in #sections --
+    // still the previous render's markup at this point -- and remember it
+    // under renderedKey, the character that markup actually belongs to.
+    function snapshotOpenSections() {
+        if (!renderedKey) return;
+        let perChar = sectionOpenState.get(renderedKey);
+        for (const details of document.querySelectorAll('#sections details')) {
+            const key = details.querySelector('input[data-key]')?.dataset.key;
+            if (!key) continue;
+            if (!perChar) sectionOpenState.set(renderedKey, perChar = new Map());
+            perChar.set(key, details.open);
         }
-        return { keys: open, hadSections };
     }
 
     function render() {
+        snapshotOpenSections();
+
         el('characterButtons').innerHTML =
             SidekickRender.characterButtonsHtml(states, activeKey);
 
@@ -79,22 +98,24 @@
             el('headerBlock').innerHTML = '';
             el('sections').innerHTML = '<div class="loading">Waiting for a character&hellip;</div>';
             el('globals').innerHTML = '';
+            renderedKey = null;
             return;
         }
 
-        const { keys: wasOpen, hadSections } = openSectionKeys();
         el('headerBlock').innerHTML = SidekickRender.headerHtml(state);
         el('sections').innerHTML = SidekickRender.sectionsHtml(state.sections);
         el('globals').innerHTML = SidekickRender.globalsHtml(state.globals);
+        renderedKey = activeKey;
 
-        // Restore what the user had open, over the schema's own enabled/open
-        // default -- their last click wins over the addon's suggestion. Only
-        // restore if a prior render existed (hadSections); on first render, let
-        // the schema's default guide the open state.
-        if (hadSections) {
+        // Restore this character's remembered open/closed state, over the
+        // schema's own enabled/open default -- their last click wins over the
+        // addon's suggestion. A key with no entry (never seen for this
+        // character) is left exactly as freshly rendered.
+        const remembered = sectionOpenState.get(activeKey);
+        if (remembered) {
             for (const details of document.querySelectorAll('#sections details')) {
                 const key = details.querySelector('input[data-key]')?.dataset.key;
-                if (key) details.open = wasOpen.has(key);
+                if (key && remembered.has(key)) details.open = remembered.get(key);
             }
         }
     }
