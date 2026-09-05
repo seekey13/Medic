@@ -20,6 +20,14 @@ const SidekickRender = (() => {
         return String(text ?? '').replace(/[&<>"']/g, (c) => ENTITIES[c]);
     }
 
+    // Hardening: empty Lua tables encode as {} not []. Coerce to array.
+    // lib/core/json.lua encodes an empty Lua table as {}, a JSON object, never
+    // [], so any logically-list field can arrive as an empty object and .map()
+    // on it throws. The caller must normalize before iterating.
+    function asArray(value) {
+        return Array.isArray(value) ? value : [];
+    }
+
     // 'A' is the bard area-song slot; the rest are ME and P1-P5, exactly as the
     // in-game buttons are labelled.
     function slotLabel(slot) {
@@ -44,8 +52,7 @@ const SidekickRender = (() => {
                     + `</label>`;
 
             case 'combo': {
-                // Hardening: empty Lua tables encode as {} not []. Coerce to array.
-                const optionsArray = Array.isArray(control.options) ? control.options : [];
+                const optionsArray = asArray(control.options);
                 const options = optionsArray.map((option) => {
                     const selected = option === control.value ? ' selected' : '';
                     return `<option value="${escapeHtml(option)}"${selected}>`
@@ -65,8 +72,7 @@ const SidekickRender = (() => {
                     + `${control.value ? ' checked' : ''}><span>${label}</span></label>`;
 
             case 'targets': {
-                // Hardening: empty Lua tables encode as {} not []. Coerce to array.
-                const slotsArray = Array.isArray(control.slots) ? control.slots : [];
+                const slotsArray = asArray(control.slots);
                 const buttons = slotsArray.map((slot) => {
                     const on = control.value[slot] === true;
                     return `<button type="button" class="slot${on ? ' on' : ''}" data-op="buff"`
@@ -85,8 +91,7 @@ const SidekickRender = (() => {
     }
 
     function sectionHtml(section) {
-        // Hardening: empty Lua tables encode as {} not []. Coerce to array.
-        const controlsArray = Array.isArray(section.controls) ? section.controls : [];
+        const controlsArray = asArray(section.controls);
         const controls = controlsArray.map(controlHtml).join('');
         // Enabled sections open, disabled ones closed and dimmed -- the same
         // signal the in-game tab bar gives by sorting disabled sections away.
@@ -100,14 +105,12 @@ const SidekickRender = (() => {
     }
 
     function sectionsHtml(sections) {
-        // Hardening: empty Lua tables encode as {} not []. Coerce to array.
-        const sectionsArray = Array.isArray(sections) ? sections : [];
+        const sectionsArray = asArray(sections);
         return sectionsArray.map(sectionHtml).join('');
     }
 
     function globalsHtml(globals) {
-        // Hardening: empty Lua tables encode as {} not []. Coerce to array.
-        const globalsArray = Array.isArray(globals) ? globals : [];
+        const globalsArray = asArray(globals);
         return globalsArray.map(controlHtml).join('');
     }
 
@@ -115,6 +118,10 @@ const SidekickRender = (() => {
         return Object.keys(states).map((key) => {
             const state = states[key];
             const active = key === activeKey ? 'active' : 'inactive';
+            // is_online: read the derived field, not online_flag. The addon can only
+            // write is_online:false on clean unload, so a crashed client reads as online
+            // forever. The caller derives is_online from online_flag + last_seen (staleness)
+            // before every render, so only the reader can notice.
             const dot = state.is_online ? 'online' : 'offline';
             const icon = state.is_online ? 'mdi-circle-slice-8' : 'mdi-minus-circle-off';
             return `<button type="button" data-char="${escapeHtml(key)}"`

@@ -17,6 +17,7 @@ const render = require('../render.js');
 // Character and ability names come off the game client, and a name is not a
 // place to find out that innerHTML runs markup.
 assert.strictEqual(render.escapeHtml('<b>&"x"'), '&lt;b&gt;&amp;&quot;x&quot;');
+assert.strictEqual(render.escapeHtml("Ni'Zho"), 'Ni&#39;Zho');
 
 // Controls ------------------------------------------------------------------
 const check = render.controlHtml(
@@ -86,7 +87,7 @@ const emptyControlsSection = render.sectionHtml({
 });
 assert.match(emptyControlsSection, /<details/, 'empty controls section should render');
 
-const emptyControlsRender = render.sectionsHtml({ sections: {} });
+const emptyControlsRender = render.sectionsHtml({});
 assert.strictEqual(emptyControlsRender, '', 'empty sections object should render as empty string');
 
 const emptyCombo = render.controlHtml({ t: 'combo', key: 'test', label: 'Test',
