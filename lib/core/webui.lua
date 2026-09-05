@@ -59,6 +59,7 @@ function webui.parse_request(text, now)
     end
 
     local id, ts
+    local seen_id, seen_ts = false, false
     local ops = {}
 
     for raw in text:gmatch('[^\r\n]+') do
@@ -66,8 +67,17 @@ function webui.parse_request(text, now)
         local verb = fields[1]
 
         if verb == 'id' then
+            -- A second id or ts line almost certainly means two requests got
+            -- concatenated (a retry racing a stale write, a hand-edited
+            -- file); silently keeping the last value would apply an
+            -- envelope that never existed as written. Reject like every
+            -- other malformed line rather than picking a winner.
+            if seen_id then return nil, 'duplicate id' end
+            seen_id = true
             id = fields[2]
         elseif verb == 'ts' then
+            if seen_ts then return nil, 'duplicate ts' end
+            seen_ts = true
             ts = tonumber(fields[2])
         elseif OP_FIELDS[verb] then
             if #fields - 1 ~= OP_FIELDS[verb] then
@@ -131,6 +141,15 @@ local function plan_op(op, index)
             return { kind = 'set', key = key, value = (raw == 'true') }
 
         elseif control.t == 'slider' then
+            -- tonumber alone is too permissive for an untrusted field: "0x10"
+            -- parses as hex, "1e400" as an infinity that the clamp below would
+            -- swallow silently, "1.0" as a float where every slider wants an
+            -- integer. None of those would escape the clamp or crash, but they
+            -- are side doors this format has no reason to open. Require plain
+            -- decimal digits, optionally negative, before parsing.
+            if not raw:match('^%-?%d+$') then
+                return nil, key .. ' takes a whole number'
+            end
             local value = tonumber(raw)
             if not value or value ~= value or value ~= math.floor(value) then
                 return nil, key .. ' takes a whole number'
@@ -143,14 +162,17 @@ local function plan_op(op, index)
             return { kind = 'set', key = key, value = value }
 
         elseif control.t == 'combo' then
-            -- 'None' first, and before the options scan: the dropdowns that can
-            -- be cleared carry 'None' as an option, and storing the literal
-            -- string would leave focus_target set to a character called None.
-            if raw == 'None' then
-                return { kind = 'set', key = key, value = nil }
-            end
             for _, option in ipairs(control.options) do
                 if option == raw then
+                    -- 'None' maps to nil rather than the literal string: the
+                    -- dropdowns that can be cleared carry 'None' as an option,
+                    -- and storing the literal string would leave focus_target
+                    -- set to a character called None. Folded into the options
+                    -- scan (rather than checked up front) so a combo that does
+                    -- not list 'None' rejects it like any other unknown value.
+                    if raw == 'None' then
+                        return { kind = 'set', key = key, value = nil }
+                    end
                     return { kind = 'set', key = key, value = raw }
                 end
             end
