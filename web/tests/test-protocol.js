@@ -61,9 +61,31 @@ assert.throws(() => proto.encodeRequest({ id: 'a', ts: 1, ops: [['set', 'k', 'a|
 assert.throws(() => proto.encodeRequest({ id: 'a', ts: 1, ops: [['set', 'k', 'a\nb']] }),
     /separator/i, 'a newline in a value was not refused');
 assert.throws(() => proto.encodeRequest({ id: 'a|b', ts: 1, ops: [] }),
-    /separator/i, 'a pipe in the id was not refused');
+    /id/i, 'a pipe in the id was not refused');
 assert.throws(() => proto.encodeRequest({ id: 'a', ts: 1, ops: [['exec', 'rm']] }),
     /verb/i, 'an unknown verb was encoded');
+
+// webui.parse_request on the addon side accepts only [A-Za-z0-9-]{1,64} for
+// id, and rejects anything else as 'invalid id' with no way for a caller
+// correlating replies by id to ever see why -- catch it here instead.
+assert.throws(() => proto.encodeRequest({ id: 'has space', ts: 1, ops: [] }),
+    /id/i, 'an id with a space was not refused');
+assert.throws(() => proto.encodeRequest({ id: 'a'.repeat(65), ts: 1, ops: [] }),
+    /id/i, 'an id over 64 characters was not refused');
+assert.throws(() => proto.encodeRequest({ id: '', ts: 1, ops: [] }),
+    /id/i, 'an empty id was not refused');
+
+// The addon stores ts as whole seconds and bounds it at 4102444800; the
+// obvious Date.now() mistake (milliseconds) sails past that bound and every
+// request built with it would be rejected outright.
+assert.throws(() => proto.encodeRequest({ id: 'a', ts: Date.now(), ops: [] }),
+    /ts/i, 'a millisecond timestamp was not refused');
+assert.throws(() => proto.encodeRequest({ id: 'a', ts: 0, ops: [] }),
+    /ts/i, 'a ts of zero was not refused');
+assert.throws(() => proto.encodeRequest({ id: 'a', ts: 1.5, ops: [] }),
+    /ts/i, 'a non-integer ts was not refused');
+assert.throws(() => proto.encodeRequest({ id: 'a', ts: -1, ops: [] }),
+    /ts/i, 'a negative ts was not refused');
 
 // Responses -----------------------------------------------------------------
 const ok = proto.parseResponse('id|abc\nok|1\nmsg|Applied 2 change(s)\n');

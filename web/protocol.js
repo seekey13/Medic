@@ -24,6 +24,21 @@ const SidekickProtocol = (() => {
     const BOOL_AS_ON_OFF = new Set(['ability', 'group', 'buff']);
     const VERB_FIELDS = { set: 2, ability: 2, group: 2, buff: 3, cmd: 1 };
 
+    // Mirrors the id class webui.parse_request enforces on the addon side.
+    // An id outside it is not a wire-format problem field() would catch (no
+    // separator, just the wrong shape), but the addon still answers with
+    // 'invalid id' -- reject it here rather than round-trip a request that
+    // can never succeed.
+    const ID_RE = /^[A-Za-z0-9-]{1,64}$/;
+
+    // The addon stores ts as a whole number of seconds and refuses anything
+    // outside (0, MAX_TS) -- see webui.lua's parse_request. The obvious
+    // Date.now() mistake (milliseconds) sails past MAX_TS, and a failed
+    // parse_request answers with format_response('unknown', ...), so a
+    // caller correlating replies by id would wait out its whole timeout
+    // instead of seeing why.
+    const MAX_TS = 4102444800;
+
     function newId() {
         const raw = (crypto.randomUUID && crypto.randomUUID())
             || String(Date.now()) + Math.random().toString(36).slice(2);
@@ -45,6 +60,13 @@ const SidekickProtocol = (() => {
     }
 
     function encodeRequest({ id, ts, ops }) {
+        if (typeof id !== 'string' || !ID_RE.test(id)) {
+            throw new Error(`id must match ${ID_RE}: ${JSON.stringify(id)}`);
+        }
+        if (typeof ts !== 'number' || !Number.isInteger(ts) || ts <= 0 || ts >= MAX_TS) {
+            throw new Error(`ts must be a whole number of seconds in (0, ${MAX_TS}): ${ts}`);
+        }
+
         const lines = [`id|${field(id, 'id')}`, `ts|${field(ts, 'ts')}`];
 
         for (const op of ops || []) {
