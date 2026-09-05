@@ -308,7 +308,13 @@ function webui.is_valid_key(key)
 end
 
 function webui.root_dir()
-    return string.format('%sconfig\\addons\\sidekick\\', AshitaCore:GetInstallPath())
+    -- GetInstallPath() returns the Ashita root with NO trailing separator --
+    -- lib/core/party_share.lua's shared_dir() and Ashita's own
+    -- addons/libs/settings.lua both add the '\' themselves. Do not "clean up"
+    -- this literal backslash; without it every path here resolves one
+    -- directory level off (...\Ashitaconfig\... instead of ...\Ashita\config\...)
+    -- and the whole bridge silently reads and writes nothing.
+    return string.format('%s\\config\\addons\\sidekick\\', AshitaCore:GetInstallPath())
 end
 
 function webui.character_dir(key)
@@ -335,12 +341,25 @@ local function write_file(path, body)
     return true
 end
 
+-- Shared by the periodic online beat, go_offline(), and the character-switch
+-- beat below, so all three agree on the wire format.
+local function write_heartbeat(dir, is_online)
+    write_file(dir .. 'heartbeat.json',
+        string.format('{"last_seen":%d,"is_online":%s}', os.time(), is_online and 'true' or 'false'))
+end
+
 --- Everything schema.build needs that only the game knows.
 local function build_env(settings)
     local common = require('lib.core.common')
     local ui_config = require('lib.ui.config')
     local ui = require('lib.ui.components')
     local item = require('lib.actions.item')
+
+    -- render() only runs while the config window is open, so a player who
+    -- drives Sidekick entirely from the browser this session would otherwise
+    -- never hydrate the mirror and see every target row read as unset even
+    -- though settings.party_buffs holds real saved data.
+    ui_config.hydrate_party_buffs(settings)
 
     local main_level, sub_level = common.get_player_level()
 
@@ -392,6 +411,10 @@ end
 -- config window uses so a browser click and an in-game click are one path.
 local function toggle_ctx(deps)
     local ui_config = require('lib.ui.config')
+    -- Same guarded hydration as build_env: poll() builds this ctx to apply a
+    -- browser-driven buff/target toggle, and that has to land on the real
+    -- saved rows even when build_env has not run yet this session.
+    ui_config.hydrate_party_buffs(deps.settings)
     return {
         settings = deps.settings,
         save_callback = deps.save,
@@ -441,8 +464,17 @@ local function poll(deps, dir, built)
 
     -- Remove it before doing anything else. A request that fails to validate
     -- must not be retried every second for the rest of the session, and one
-    -- that throws must not be replayed.
-    os.remove(path)
+    -- that throws must not be replayed. If the removal itself fails --
+    -- file locks are far more common on Windows than POSIX -- request.txt
+    -- stays on disk and would otherwise be re-read and re-applied on every
+    -- following poll; cmd|toggle is a valid command, so a stuck removal
+    -- would flip automation on and off once a second. Bail out with nothing
+    -- applied and let the next poll retry the removal instead.
+    local removed, remove_err = os.remove(path)
+    if not removed then
+        common.debugf('[WebUI] Could not remove %s: %s', path, tostring(remove_err))
+        return false
+    end
 
     local parsed, err = webui.parse_request(body, os.time())
     if not parsed then
@@ -482,8 +514,12 @@ local function poll(deps, dir, built)
     return result.ok
 end
 
---- Called every frame from Sidekick.lua's d3d_present handler. Self-throttled.
-function webui.tick(deps)
+-- The actual per-frame work, split out so webui.tick can pcall the whole thing:
+-- this touches disk, scans inventory and builds whatever schema the loaded
+-- job produces, and a throw from a job-specific edge case must not escape
+-- into Sidekick.lua's d3d_present handler and repeat every frame -- same
+-- reasoning as automation.lua's per-module pcall.
+local function do_tick(deps)
     if not enabled or not deps.settings or not deps.job_def then return end
 
     local key = webui.character_key()
@@ -492,6 +528,15 @@ function webui.tick(deps)
     local dir = webui.character_dir(key)
     if not dir then return end
     if key ~= last_key then
+        -- Switching characters at character select does not unload the
+        -- addon, so without this the OLD character's heartbeat.json would
+        -- stay "is_online":true forever and the web page would show a
+        -- client that is gone as live. Write it for the key we are LEAVING,
+        -- before last_key moves on to the new one.
+        if last_key then
+            local old_dir = webui.character_dir(last_key)
+            if old_dir then write_heartbeat(old_dir, false) end
+        end
         -- The settings module made this folder at load, but a first login on a
         -- new character can beat it there.
         ashita.fs.create_dir(dir)
@@ -536,8 +581,21 @@ function webui.tick(deps)
 
     if now >= next_heartbeat then
         next_heartbeat = now + HEARTBEAT_INTERVAL
-        write_file(dir .. 'heartbeat.json',
-            string.format('{"last_seen":%d,"is_online":true}', os.time()))
+        write_heartbeat(dir, true)
+    end
+end
+
+--- Called every frame from Sidekick.lua's d3d_present handler. Self-throttled.
+-- pcall-wrapped like automation.lua wraps each action module: a throw here
+-- must not escape into the render loop and repeat every frame. The interval
+-- gates inside do_tick advance BEFORE the risky work they guard, so even a
+-- persistent failure is only retried -- and only logged -- once per second,
+-- not 60 times; the next tick always gets to try again.
+function webui.tick(deps)
+    local ok, result = pcall(do_tick, deps)
+    if not ok then
+        local common = require('lib.core.common')
+        common.errorf('[WebUI] tick failed: %s', tostring(result))
     end
 end
 
@@ -547,8 +605,7 @@ function webui.go_offline()
     local key = last_key or webui.character_key()
     local dir = key and webui.character_dir(key)
     if not dir then return end
-    write_file(dir .. 'heartbeat.json',
-        string.format('{"last_seen":%d,"is_online":false}', os.time()))
+    write_heartbeat(dir, false)
 end
 
 return webui

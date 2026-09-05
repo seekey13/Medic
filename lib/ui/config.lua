@@ -741,6 +741,25 @@ function ui_config.get_party_buffs()
     return party_buffs
 end
 
+--- Copy settings.party_buffs into the module-local mirror on first use.
+-- Pulled out of render() so webui.lua can call it too: render() only runs
+-- while the config window is open, and heal.lua / buff.lua / geo.lua /
+-- status_removal.lua all read get_party_buffs() regardless of whether that
+-- window has ever been opened this session. Guarded the same way it was
+-- inline -- only hydrate while the mirror is still empty -- so a player who
+-- toggles targets in-game first is never overwritten by a stale settings read.
+function ui_config.hydrate_party_buffs(settings)
+    if settings.party_buffs and next(party_buffs) == nil then
+        -- Deep copy party_buffs from settings
+        for ability_name, targets in pairs(settings.party_buffs) do
+            party_buffs[ability_name] = {}
+            for party_index, enabled in pairs(targets) do
+                party_buffs[ability_name][party_index] = enabled
+            end
+        end
+    end
+end
+
 function ui_config.get_party_buff_gates()
     return party_buff_gates
 end
@@ -810,16 +829,8 @@ function ui_config.render(settings, job_def, callback)
     end
     
     -- Load party buff selections from settings on first render
-    if settings.party_buffs and next(party_buffs) == nil then
-        -- Deep copy party_buffs from settings
-        for ability_name, targets in pairs(settings.party_buffs) do
-            party_buffs[ability_name] = {}
-            for party_index, enabled in pairs(targets) do
-                party_buffs[ability_name][party_index] = enabled
-            end
-        end
-    end
-    
+    ui_config.hydrate_party_buffs(settings)
+
     -- Always sync disabled_ keys from party_buffs to ensure consistency
     -- This prevents old disabled_ values from overriding the party buff selections
     if settings.party_buffs then
