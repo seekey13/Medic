@@ -49,18 +49,25 @@ self.addEventListener('fetch', (event) => {
 
     event.respondWith(caches.open(CACHE).then(async (cache) => {
         const cached = await cache.match(event.request);
+        // async so the cache write can be awaited before the update is
+        // announced; the outer waitUntil already keeps the worker alive for
+        // this whole chain. A cache hit is returned below without waiting on
+        // it, and a miss only waits on one local write.
         const network = fetch(event.request)
-            .then((response) => {
+            .then(async (response) => {
                 // A redirected response cannot be replayed for a navigation,
                 // and an opaque one has no usable status.
                 if (response.ok && response.type === 'basic') {
                     // A different ETag means this file was deployed after the
-                    // page loaded. The new bytes go into the cache on the next
-                    // line, so a plain reload is enough to run them.
-                    if (cached && cached.headers.get('etag') !== response.headers.get('etag')) {
-                        announceUpdate();
-                    }
-                    cache.put(event.request, response.clone());
+                    // page loaded. The new bytes go into the cache below, so a
+                    // plain reload is enough to run them.
+                    const isUpdate = cached
+                        && cached.headers.get('etag') !== response.headers.get('etag');
+                    // Announce only once the put has landed: a reload racing
+                    // the toast would otherwise still be served the old bytes
+                    // and show the toast all over again.
+                    await cache.put(event.request, response.clone());
+                    if (isUpdate) announceUpdate();
                 }
                 return response;
             })

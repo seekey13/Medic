@@ -47,8 +47,10 @@ const SidekickRender = (() => {
             case 'slider':
                 return `<label class="row slider"><span>${label}</span>`
                     + `<input type="range" data-op="set" data-key="${escapeHtml(control.key)}"`
-                    + ` min="${control.min}" max="${control.max}" value="${control.value}">`
-                    + `<output data-readout="${escapeHtml(control.key)}">${control.value}</output>`
+                    + ` min="${escapeHtml(control.min)}" max="${escapeHtml(control.max)}"`
+                    + ` value="${escapeHtml(control.value)}">`
+                    + `<output data-readout="${escapeHtml(control.key)}">`
+                    + `${escapeHtml(control.value)}</output>`
                     + `</label>`;
 
             case 'combo': {
@@ -79,7 +81,7 @@ const SidekickRender = (() => {
                         + ` data-name="${escapeHtml(control.name)}"`
                         + ` data-group="${control.group ? 'true' : 'false'}"`
                         + ` data-slot="${escapeHtml(slot)}" data-on="${on ? 'true' : 'false'}">`
-                        + `${slotLabel(slot)}</button>`;
+                        + `${escapeHtml(slotLabel(slot))}</button>`;
                 }).join('');
                 return `<div class="row targets"><span class="target-name">${label}</span>`
                     + `<span class="slots">${buttons}</span></div>`;
@@ -132,13 +134,13 @@ const SidekickRender = (() => {
 
     function headerHtml(state) {
         const sub = state.sub_level > 0
-            ? `${escapeHtml(state.sub_job)} ${state.sub_level}`
+            ? `${escapeHtml(state.sub_job)} ${escapeHtml(state.sub_level)}`
             : 'None 0';
         // One button, like the window's: it always sends `toggle`, so a stale
         // page cannot start a client it thought was stopped and stop it twice.
         return `<div class="job-row">`
             + `<span class="profile">${escapeHtml(state.profile || 'Default')}</span>`
-            + `<span class="job-line">${escapeHtml(state.job)} ${state.main_level} / ${sub}</span>`
+            + `<span class="job-line">${escapeHtml(state.job)} ${escapeHtml(state.main_level)} / ${sub}</span>`
             + `</div>`
             + `<div class="automation-row">`
             + `<button type="button" class="automation ${state.automation ? 'stop' : 'start'}"`

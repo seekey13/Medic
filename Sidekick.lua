@@ -584,6 +584,13 @@ local function setup_job()
         if character_changed then
             ui_config.reset_party_buff_state()
             ui_config.hydrate_party_buffs(addon_settings)
+            -- The web UI opt-in is per character as well, and the bridge keeps
+            -- it in a module-local that the one-shot restore below sets exactly
+            -- once per addon *load*. A character switch does not unload the
+            -- addon, so without this B inherits A's answer: on for a character
+            -- who never opted in (writing B's snapshot and running B's browser
+            -- requests), or off while /sk webui still reports enabled.
+            webui.set_enabled(addon_settings.webui_enabled == true)
         end
     end
 end

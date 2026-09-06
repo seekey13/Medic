@@ -487,7 +487,15 @@ local function poll(deps, dir, built)
     local parsed, err = webui.parse_request(body, os.time())
     if not parsed then
         common.debugf('[WebUI] Rejected request: %s', tostring(err))
-        write_file(dir .. 'response.txt', webui.format_response('unknown', { ok = false, err = err }))
+        -- Answer under the id the request carried, even though the envelope
+        -- failed to validate. The browser skips any reply whose id is not the
+        -- one it sent, so 'unknown' buries the real reason under a 15-second
+        -- timeout and a wrong "another tab overwrote it" message. Clock skew
+        -- alone (a browser more than MAX_FUTURE_SECONDS ahead) fails every
+        -- request this way. id is always the first line, and the character
+        -- class keeps a hand-edited file from injecting extra response lines.
+        local reply_id = body:match('^id|([%w%-]+)') or 'unknown'
+        write_file(dir .. 'response.txt', webui.format_response(reply_id, { ok = false, err = err }))
         return false
     end
 

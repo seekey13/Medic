@@ -24,6 +24,7 @@
     let states = {};
     let activeKey = null;
     let busy = false;
+    let refreshing = false;
 
     const el = (id) => document.getElementById(id);
 
@@ -123,7 +124,14 @@
     // --- Sending -----------------------------------------------------------
 
     async function send(ops) {
-        if (!root || !activeKey || busy) return;
+        if (!root || !activeKey) return;
+        // The in-flight window is the request timeout (15s), not the poll
+        // interval, and a silently dropped click looks exactly like the client
+        // refusing the change: the checkbox flips, then snaps back.
+        if (busy) {
+            toast('Still waiting on the game client -- try that again in a moment.');
+            return;
+        }
         busy = true;
         try {
             const reply = await SidekickBridge.request(root, activeKey, ops);
@@ -219,7 +227,14 @@
     }
 
     async function refreshFromDisk() {
-        if (!root) return;
+        // One read at a time. Two overlapping reads share `cache` but each
+        // builds its own `seen` set, so the slower one's prune deletes rows the
+        // faster one just inserted -- they come back as "new" on the next tick
+        // and repaint forever, the exact storm the mtime cache exists to stop.
+        // send()'s own refresh can land mid-interval, so overlap is reachable.
+        // Dropping the overlapping call costs nothing: the poll is 1s.
+        if (!root || refreshing) return;
+        refreshing = true;
         try {
             const read = await SidekickBridge.readAllStates(root, cache);
 
@@ -249,6 +264,8 @@
             console.error('Failed to read the Sidekick folder:', err);
             stopPolling();
             showConnectOverlay('Lost access to your Sidekick folder. Choose it again to reconnect.');
+        } finally {
+            refreshing = false;
         }
     }
 

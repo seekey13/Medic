@@ -24,7 +24,7 @@ const shell = JSON.parse(
 // the ignore file, this suite) is not site content and is held back by
 // .assetsignore, so it is not expected in the shell either.
 const TOOLING = new Set(['wrangler.jsonc', 'package.json', '.assetsignore', '_headers', 'sw.js']);
-const NOT_SITE_CONTENT = new Set(['tests', 'node_modules']);
+const NOT_SITE_CONTENT = new Set(['tests', 'node_modules', '.wrangler']);
 
 function walk(dir, prefix = '') {
     for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {

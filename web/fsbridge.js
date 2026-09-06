@@ -116,7 +116,12 @@ const SidekickBridge = (() => {
         if (!handle) return null;
         const file = await handle.getFile();
         try {
-            return { value: JSON.parse(await file.text()), lastModified: file.lastModified };
+            const value = JSON.parse(await file.text());
+            // JSON.parse('null') does not throw, so without this the caller
+            // dereferences null and the whole read fails as "lost folder
+            // access" -- a dead session out of one malformed file.
+            if (typeof value !== 'object' || value === null) return null;
+            return { value, lastModified: file.lastModified };
         } catch (err) {
             // Caught the addon mid-write. The caller keeps whatever it had.
             return null;
@@ -161,6 +166,13 @@ const SidekickBridge = (() => {
                 } catch (err) {
                     continue; // Mid-write. Keep the last good snapshot.
                 }
+
+                // A valid JSON scalar is not a snapshot, and `null` parses
+                // without throwing, so the version test below would dereference
+                // it and take the whole read down as "lost folder access".
+                // Treated like a mid-write rather than a version mismatch: the
+                // addon is not telling us it is old, the file just isn't one.
+                if (!snapshot || typeof snapshot !== 'object') continue;
 
                 if (snapshot.v !== STATE_FORMAT) {
                     // Guessing at a layout we do not know draws an empty config
@@ -316,7 +328,8 @@ const SidekickBridge = (() => {
                         ok: false,
                         queued: true,
                         err: 'No reply from the game client. The change is queued and will apply '
-                            + 'next time this character logs in with /sk webui on.',
+                            + 'the next time this character logs in with /sk webui on, within the '
+                            + 'hour -- the client discards a request older than that.',
                     };
                 }
             }

@@ -186,6 +186,20 @@ function snapshot(overrides = {}) {
     assert.strictEqual(partial.states.Seekey_33748.character, 'Seekey',
         'a mid-write read dropped the last good snapshot');
 
+    // A literal JSON `null` parses fine, so a naive read dereferences it and
+    // the throw reaches app.js as "lost folder access" -- a dead session out of
+    // one malformed file. Either file must survive it.
+    live.files.Seekey_33748.files['state.json'] = fakeFile('null');
+    const nullState = await bridge.readAllStates(live, cache2);
+    assert.strictEqual(nullState.states.Seekey_33748.character, 'Seekey',
+        'a null state.json dropped the last good snapshot');
+    live.files.Seekey_33748.files['state.json'] = fakeFile(snapshot());
+    live.files.Seekey_33748.files['heartbeat.json'] = fakeFile('null');
+    const nullBeat = await bridge.readAllStates(live, cache2);
+    assert.strictEqual(nullBeat.states.Seekey_33748.character, 'Seekey',
+        'a null heartbeat.json killed the read');
+    delete live.files.Seekey_33748.files['heartbeat.json'];
+
     // A folder that disappears drops out of the cache.
     delete live.files.Seekey_33748;
     const gone = await bridge.readAllStates(live, cache2);

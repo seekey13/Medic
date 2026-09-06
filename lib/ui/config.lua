@@ -31,6 +31,11 @@ local save_callback = nil
 -- that the window stays usable and keeps empty body space to right-click.
 local MIN_CUSTOM_WINDOW_WIDTH = 320
 local MIN_CUSTOM_WINDOW_HEIGHT = 200
+-- No ceiling. Ashita exposes no FLT_MAX global, so the bare name below used to
+-- read nil and the max pair collapsed to an empty table, which ImGui takes as
+-- (0,0) -- min(0, size) then max(min_size, 0) pins the window at its floor and
+-- the resize grip does nothing.
+local MAX_CUSTOM_WINDOW_SIZE = 3.402823466e+38  -- FLT_MAX
 
 -- Focus state (now saved to settings as names)
 local focus_target_name = nil  -- Character name or nil for None
@@ -952,7 +957,8 @@ function ui_config.render(settings, job_def, callback)
         -- there (BeginPopupContextWindow tests the whole outer rect, so the title bar
         -- opens it too), so this floor is comfort rather than an escape hatch.
         imgui.SetNextWindowSizeConstraints(
-            { MIN_CUSTOM_WINDOW_WIDTH, MIN_CUSTOM_WINDOW_HEIGHT }, { FLT_MAX, FLT_MAX })
+            { MIN_CUSTOM_WINDOW_WIDTH, MIN_CUSTOM_WINDOW_HEIGHT },
+            { MAX_CUSTOM_WINDOW_SIZE, MAX_CUSTOM_WINDOW_SIZE })
     end
 
     -- NOTE: imgui.Begin returns false when the window is COLLAPSED, not only when
