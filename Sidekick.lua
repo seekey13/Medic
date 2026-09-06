@@ -10,7 +10,7 @@ Main addon file: job detection, event loop, command handler
 
 addon.name      = 'Sidekick'
 addon.author    = 'Seekey'
-addon.version   = '2.9.0'
+addon.version   = '2.8.0'
 addon.desc      = 'Support Job Automation Framework'
 addon.link      = 'https://github.com/seekey13/Sidekick'
 
