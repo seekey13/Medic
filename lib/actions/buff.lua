@@ -853,7 +853,7 @@ function buff.execute(settings, job_def, main_level, sub_level, player_resource,
                     -- Hold: a member with no single-target song is out of range.
                     -- Don't area-cast and don't mark pending, so the single-target
                     -- pass still manages Pianissimo-assigned members this tick.
-                    common.announce_gather(ability.name)
+                    common.announce_gather(ability.name, settings)
                 elseif fast_casting and not has_pianissimo then
                     -- Only raise Pianissimo once the song is off recast and affordable,
                     -- else Pianissimo's own recast burns down while the song waits.
@@ -1310,7 +1310,7 @@ function buff.execute(settings, job_def, main_level, sub_level, player_resource,
                     -- block lower-priority non-AOE self-buffs this tick.
                     if ability.aoe and settings.hold_aoe_for_group
                        and not common.group_in_aoe_range() then
-                        common.announce_gather(ability.name)
+                        common.announce_gather(ability.name, settings)
                         goto continue_ability
                     end
 

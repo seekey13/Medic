@@ -804,7 +804,7 @@ function heal.execute_aoe(settings, job_def)
         -- check_stratagem, which this one bypasses, so it is applied directly here.
         -- Default (hold off) is unchanged: fire covering whoever is in range.
         if settings.hold_aoe_for_group and not common.group_in_aoe_range() then
-            common.announce_gather(precast.name)
+            common.announce_gather(precast.name, settings)
             return nil
         end
         -- is_stratagem reuses automation.lua's follow-up lock, which re-runs ONLY this

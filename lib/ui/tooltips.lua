@@ -173,6 +173,13 @@ return {
         'every 5 seconds. Off by default -- AOE fires\n' ..
         'whenever its normal condition is met.',
 
+    hold_aoe_announce =
+        'Sends the "/p Gather together for <ability>"\n' ..
+        'party chat line while Hold AOE for Group is\n' ..
+        'holding a cast, at most once every 5\n' ..
+        'seconds. On by default. Turn off to hold\n' ..
+        'silently -- the hold itself is unchanged.',
+
     follow =
         'Auto-follows a party member or tracked\n' ..
         'target when they move away. Sends /follow\n' ..

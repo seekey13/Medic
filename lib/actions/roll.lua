@@ -289,7 +289,7 @@ function roll.execute(settings, job_def, main_level, sub_level, player_resource)
         -- refines an already-applied roll. Checked here (not earlier) so the
         -- gather announcement can name the actual roll about to be cast.
         if settings.hold_aoe_for_group and not common.group_in_aoe_range() then
-            common.announce_gather(cast_ability.name)
+            common.announce_gather(cast_ability.name, settings)
             return nil
         end
 

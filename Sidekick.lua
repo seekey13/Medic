@@ -87,6 +87,9 @@ local default_settings = T{
     -- Diffusion) until every alive, in-zone party member is in range. Opt-in;
     -- per-job-file like every setting, so flipping it on one job doesn't sync.
     hold_aoe_for_group = false,
+    -- Send "/p Gather together for <ability>" while an AOE cast is held above.
+    -- On by default; turn off to hold silently without touching party chat.
+    hold_aoe_announce = true,
     -- Gear-based heal potency bonuses (job-independent, set from /sk panel).
     -- +x% applied to each heal ability's base `value` when sizing to missing HP.
     cure_potency = 0,   -- MP heals (Cure spells, Blue Magic cures)
