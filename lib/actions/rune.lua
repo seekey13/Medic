@@ -108,6 +108,14 @@ function rune.execute(settings, job_def, main_level, sub_level, player_resource)
         return nil
     end
 
+    -- Upkeep only, not urgent: hold while resting. 'rune' is deliberately
+    -- absent from automation.lua's REST_BREAKING, so nothing else clears
+    -- common.is_resting() on our behalf -- firing here would stand the
+    -- player up mid-rest and stall MP recovery until they moved.
+    if common.is_resting() then
+        return nil
+    end
+
     local abilities = job_def and job_def.abilities
     if not abilities or not abilities.rune then
         return nil
@@ -118,6 +126,9 @@ function rune.execute(settings, job_def, main_level, sub_level, player_resource)
         return nil
     end
 
+    -- available[1] is arbitrary post-sort, but is_main_job is uniform across
+    -- the whole rune category -- RUN can't be main and sub at once -- so
+    -- reading it off any one element here is safe.
     local max_runes = rune.max_runes(rune.run_level(available[1], main_level, sub_level))
     local player_buffs = (common.game_state.player or {}).buffs or {}
 
