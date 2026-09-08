@@ -136,11 +136,21 @@ return {
         -- combat_only: these are long-recast mitigation abilities. Out of combat
         -- the row drops out of filter_abilities_by_level entirely and Idle Runes
         -- keeps the slots, which is the whole point of having an idle set.
+        --
+        -- priority: all three tie on cost (0), and filter_abilities_by_level
+        -- sorts its output by priority then cost -- table.sort gives no
+        -- stability guarantee for a tie, so leaving priority unset would let
+        -- Vallation/Valiance/Pflug come back in whatever order table.sort felt
+        -- like on a given run. rune.lua's execute() just walks the list and
+        -- takes the first ready ability, trusting it to already be in the
+        -- intended order (Vallation, then Valiance, then Pflug), so that order
+        -- has to be pinned here in the data, not left to table order.
         rune_ja = {
             {
                 name = 'Vallation',
                 level = 10,
                 cost = 0,
+                priority = 3,
                 recast_id = 23,
                 buff_id = 531,
                 rune_field = 'resist',
@@ -151,6 +161,7 @@ return {
                 name = 'Valiance',
                 level = 50,
                 cost = 0,
+                priority = 2,
                 recast_id = 113,
                 buff_id = 535,
                 rune_field = 'resist',
@@ -161,6 +172,7 @@ return {
                 name = 'Pflug',
                 level = 40,
                 cost = 0,
+                priority = 1,
                 recast_id = 59,
                 buff_id = 533,
                 rune_field = 'status',
