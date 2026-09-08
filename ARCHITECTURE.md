@@ -36,6 +36,7 @@ lib/
     rest.lua                Automatic resting (/heal) with follow-target awareness
     revive.lua              Raise dead party/tracked/alliance members
     roll.lua                COR Phantom Roll / Double-Up (incl. its 0x028 total reader)
+    rune.lua                RUN rune upkeep (idle set + Vallation/Valiance/Pflug sets)
     status_removal.lua      Debuff removal & sleep wake (single + AOE)
   jobs/
     bard.lua                BRD job definition
@@ -197,6 +198,7 @@ field name must match its command (see the ability-field reference below).
 | `normalize_ids(ids)` | Coerce `number \| table \| nil` → flat table |
 | `has_any_buff(active, check_ids)` | True if any active buff matches any check ID |
 | `needs_buff(active, check_ids)` | True if none of the check IDs are active (nil = always needed) |
+| `first_missing_stack(desired, active)` | First entry in `desired` whose `buff_id` is not yet covered by `active`, counting duplicates so the same buff listed twice asks for a second copy. `nil` when all are satisfied. Shared by PUP maneuver upkeep and RUN rune upkeep |
 
 **Ability Candidacy**:
 
@@ -605,6 +607,45 @@ MP and TP recovery. Monitors percentage thresholds. Uses `action_core.first_comm
   check and would otherwise fire while sneaking past a camp toward a party fight. Sneak (71)
   survives `/pet` and is never gated.
 
+### rune.lua – Rune Fencer Rune Upkeep
+
+Keeps Rune Fencer runes standing. The eight runes (`abilities.rune`, buff ids 523-530) are separate
+status effects sharing one 5-second recast (`recast_id = 10`); the number that stand at once follows
+the RUN level — 1 at 1, 2 at 35, 3 at 65 (`rune.max_runes`, off `rune.run_level`, which reads the sub
+level for a subjob RUN). Swipe and Lunge strip them; **Sidekick fires neither** — the player does — it
+only refills.
+
+Four configurable rows, all at the top of the UI's **Buffs** section and all under its `buff_enabled`
+master switch: **Idle Runes** plus one row per rune-consuming JA in `abilities.rune_ja` (Vallation 10 /
+`recast_id` 23, Valiance 50 / 113, Pflug 40 / 59, all `combat_only`). Each row stores its picks as
+`rune_<prefix>_1..3`, enabled by `rune_<prefix>_enabled`, where `<prefix>` is `idle` or the JA's
+lowercased name. The three JA rows always evaluate in that order — Vallation, Valiance, Pflug —
+because each entry pins an explicit `priority` (3/2/1) in the job file: all three tie on `cost` (0),
+and `table.sort` gives no stability guarantee for a tie, so leaving `priority` unset would let
+`filter_abilities_by_level`'s sort return them in whatever order it felt like on a given run.
+
+`execute` holds off entirely while `common.is_resting()` is true: `'rune'` is deliberately absent from
+`automation.lua`'s `REST_BREAKING`, since upkeep is not urgent, so without this guard a rune fired
+mid-rest would stand the player up while `is_resting()` stayed true and `rest.lua` would treat the
+next tick as already-resting and never re-issue `/heal` — the same guard `pet.lua`, `buff.lua` and
+`geo.lua` already use. Otherwise it resolves in one order every tick: the first JA row that is
+enabled, level-available and **recast-zero** claims the rune slots — its missing runes go up one per
+tick, then the JA fires — and Idle Runes takes them back the moment that recast is running again. A
+JA row with no runes picked claims nothing and falls through. Availability is read with
+`action_core.is_ability_recast_zero`, never `is_usable`: the latter's post-recast delay is consuming,
+so using it to *decide* would leave the following `try_use` nothing to consume and the JA would never
+fire. The buff diff is `action_core.first_missing_stack`, shared with PUP maneuvers, so picking the
+same rune in two slots correctly asks for two copies.
+
+The module also owns the settings-key helpers (`enable_key`, `slot_key`, `setting_prefix`, `max_runes`,
+`run_level`, `desired_runes`) because `lib/ui/config.lua` draws the same rows and must agree on every
+key — the same reason it already requires `lib/actions/roll` for `reset_state`.
+
+**Rune names are never shown.** Each rune carries three display strings — `element` (what it adds),
+`resist` (what it defends against elementally) and `status` (which ailments it defends against) — and
+a row shows whichever matches what the row is for, named by `rune_ja[].rune_field`. Settings store the
+rune's name, so relabelling a display string cannot rewrite a saved config.
+
 ### roll.lua – Corsair Phantom Roll / Double-Up
 
 - **Two configurable roll slots** (`settings.roll1_name` / `roll2_name`, chosen from
@@ -875,6 +916,14 @@ return {
                                                 --   when the heal is returned, post-swap HP is already
                                                 --   above heal_threshold, the swap never lands (5 s), or
                                                 --   a 30 s overall safety timeout elapses.
+
+    -- RUN rune fields
+    element                = 'Fire',            -- RUN runes only: one of three display strings the rune
+    resist                 = 'Ice',              --   config rows show instead of the rune's name -- what
+    status                 = 'Paralyze / Bind',  --   it adds / what it resists elementally / what ailments
+                                                --   it defends against (respectively element / resist / status)
+    rune_field              = 'resist',          -- RUN `rune_ja` entries only: which of the three above
+                                                --   that row's dropdowns show ('resist' or 'status')
 }
 ```
 
