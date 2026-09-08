@@ -151,6 +151,26 @@ function action_core.count_instances(active_buffs, check_ids)
     return n
 end
 
+-- First entry in `desired` (in list order) not yet covered by an active buff of
+-- the same id, counting duplicates -- so the same buff listed twice correctly
+-- asks for a second copy once the first is up. Returns nil once every entry, at
+-- its requested multiplicity, is satisfied. Shared by the two upkeep loops that
+-- keep a fixed set of self-buffs standing: PUP maneuvers and RUN runes.
+function action_core.first_missing_stack(desired, active_buffs)
+    local satisfied = {}
+    for _, ability in ipairs(desired) do
+        local id = ability.buff_id
+        local have = action_core.count_instances(active_buffs, id)
+        satisfied[id] = satisfied[id] or 0
+        if satisfied[id] < have then
+            satisfied[id] = satisfied[id] + 1
+        else
+            return ability
+        end
+    end
+    return nil
+end
+
 -- Inverse of has_any_buff: true when the target is MISSING the buff.
 -- When check_ids is nil (no tracking), always returns true (treat as always needed).
 function action_core.needs_buff(active_buffs, check_ids)
