@@ -33,6 +33,7 @@ local heal_mod   = require('lib.actions.heal')
 local status_mod = require('lib.actions.status_removal')
 local roll_mod   = require('lib.actions.roll')  -- also reads roll totals off the 0x028 packet
 local pet_mod = require('lib.actions.pet')  -- Pet Control: PUP maneuver upkeep + PUP/SMN/BST send-pet-at-target
+local rune_mod = require('lib.actions.rune')  -- RUN rune upkeep; also owns the settings keys the Buffs UI draws
 
 local action_modules = {
     item           = require('lib.actions.item'),
@@ -45,6 +46,7 @@ local action_modules = {
     roll           = roll_mod,
     maneuver       = { execute = pet_mod.execute_maneuver },
     pet_control     = { execute = pet_mod.execute_deploy },
+    rune           = rune_mod,
     buff           = require('lib.actions.buff'),
     recover        = require('lib.actions.recover'),
     geo            = require('lib.actions.geo'),
@@ -294,6 +296,7 @@ local function load_job_definition(main_job_id, sub_job_id)
         'geo',
         'maneuver',
         'roll',
+        'rune',
         'buff',
         'revive',
         'follow',
