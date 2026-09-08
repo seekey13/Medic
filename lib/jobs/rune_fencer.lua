@@ -1,9 +1,10 @@
 --[[
     Rune Fencer job definition
     Defines abilities, validators, and configuration for Rune Fencer automation
-    - Runes (5) and the three rune-consuming JAs (Vallation 10, Pflug 40,
-      Valiance 50). Upkeep lives in lib/actions/rune.lua; the four config rows
-      sit at the top of the UI's Buffs section.
+    - Runes (unlocked at level 5, all eight) and the three rune-consuming JAs, in
+      job/priority order: Vallation 10, Valiance 50, Pflug 40. Upkeep lives in
+      lib/actions/rune.lua; the four config rows sit at the top of the UI's Buffs
+      section.
     - Buffs (Protect, Shell, bar spells, Regen, Refresh, Spikes, Aquaveil, Blink, Stoneskin, Foil, Phalanx, job abilities)
     - Healing (Vivacious Pulse)
     - Embolden (60, RUN main): stratagem-style JA that boosts the potency of the
@@ -153,6 +154,13 @@ return {
                 priority = 3,
                 recast_id = 23,
                 buff_id = 531,
+                -- Server-side, Vallation calls delStatusEffectSilent on Valiance
+                -- before applying -- it silently stomps a standing one rather than
+                -- refusing to cast -- and Liement (537) makes it a no-op outright.
+                -- Blocking here keeps Sidekick from throwing away a standing
+                -- Valiance for nothing; whichever landed first now holds until it
+                -- expires. See rune_fencer.lua useVallationValiance.
+                blocked_by = { 535, 537 },
                 rune_field = 'resist',
                 combat_only = true,
                 command = '/ja "Vallation" <me>',
@@ -164,6 +172,12 @@ return {
                 priority = 2,
                 recast_id = 113,
                 buff_id = 535,
+                -- Server-side, Valiance is a no-op on the caster while Vallation
+                -- (531) stands -- JA_NO_EFFECT_2, "No effect on <Player>" -- and
+                -- the 300s recast still runs anyway. Liement (537) no-ops it too.
+                -- Blocking here stops Sidekick from burning that recast for
+                -- nothing; see the Vallation entry above and useVallationValiance.
+                blocked_by = { 531, 537 },
                 rune_field = 'resist',
                 combat_only = true,
                 command = '/ja "Valiance" <me>',

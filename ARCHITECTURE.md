@@ -624,6 +624,17 @@ because each entry pins an explicit `priority` (3/2/1) in the job file: all thre
 and `table.sort` gives no stability guarantee for a tie, so leaving `priority` unset would let
 `filter_abilities_by_level`'s sort return them in whatever order it felt like on a given run.
 
+**Vallation and Valiance are mutually exclusive server-side**
+(`scripts/globals/job_utils/rune_fencer.lua` `useVallationValiance`): Vallation calls
+`delStatusEffectSilent` on Valiance before applying, silently stomping a standing one, and Valiance is
+a no-op on the caster — `JA_NO_EFFECT_2`, "No effect on \<Player\>" — while Vallation stands, and that
+no-op still burns Valiance's 300-second recast. Liement (RUN 77, status id 537) overwrites both and
+makes both a no-op too, though Sidekick never fires Liement itself. The job file marks the interaction
+with `blocked_by` (Vallation: `{535, 537}`, Valiance: `{531, 537}`; Pflug has no such interaction) and
+`execute` runs `abilities.rune_ja` through `action_core.filter_self_buff_blocked` right after
+`filter_abilities_by_level` produces it, before evaluating any row — the same pattern `pet.lua`'s
+Overload handling and `status_removal.lua` use, since `try_use` does not check `blocked_by` on its own.
+
 `execute` holds off entirely while `common.is_resting()` is true: `'rune'` is deliberately absent from
 `automation.lua`'s `REST_BREAKING`, since upkeep is not urgent, so without this guard a rune fired
 mid-rest would stand the player up while `is_resting()` stayed true and `rest.lua` would treat the
@@ -829,9 +840,13 @@ return {
                                     --   selected_<group>. RDM enspells and SCH storms today; no group name
                                     --   is hardcoded, so any elemental group gets the feature by tagging
                                     --   its tiers. NOT the same field as `element` below.
-    element         = 'Wind',       -- documentation only, nothing reads it: the spell's OWN casting element
-                                    --   (BRD songs, GEO bubbles, bar-spells -- Barstone is a wind spell).
-                                    --   Unrelated to auto-select and title-cased to stay visibly distinct.
+    element         = 'Wind',       -- documentation only for everything except RUN runes (see below):
+                                    --   the spell's OWN casting element (BRD songs, GEO bubbles,
+                                    --   bar-spells -- Barstone is a wind spell). Unrelated to
+                                    --   auto-select and title-cased to stay visibly distinct. RUN's
+                                    --   `rune` entries reuse this same field name for a different
+                                    --   meaning -- the element the rune ADDS, read by the Idle Runes
+                                    --   config row -- see "RUN rune fields" below.
     auto_element_source = 'weather',-- auto_element only: where that group's auto-select reads its element.
                                     --   'weather' = ZONE weather alone, storms ignored, no day fallback
                                     --   (SCH storms -- the group CASTS storms, so reading the storm buff
@@ -919,10 +934,10 @@ return {
 
     -- RUN rune fields
     element                = 'Fire',            -- RUN runes only: one of three display strings the rune
-    resist                 = 'Ice',              --   config rows show instead of the rune's name -- what
-    status                 = 'Paralyze / Bind',  --   it adds / what it resists elementally / what ailments
+    resist                 = 'Ice',             --   config rows show instead of the rune's name -- what
+    status                 = 'Paralyze / Bind', --   it adds / what it resists elementally / what ailments
                                                 --   it defends against (respectively element / resist / status)
-    rune_field              = 'resist',          -- RUN `rune_ja` entries only: which of the three above
+    rune_field             = 'resist',          -- RUN `rune_ja` entries only: which of the three above
                                                 --   that row's dropdowns show ('resist' or 'status')
 }
 ```

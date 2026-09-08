@@ -25,6 +25,18 @@
     ailments it defends against (Pflug). Settings still store the rune's name, so
     relabelling a display string never rewrites anybody's config.
 
+    Vallation and Valiance are mutually exclusive server-side, not just two rows
+    that happen to compete for the same slots. Vallation silently strips a
+    standing Valiance before applying (delStatusEffectSilent), and Valiance is a
+    no-op on the caster -- JA_NO_EFFECT_2, "No effect on <Player>" -- while
+    Vallation stands, with its 300s recast consumed regardless. Liement (537)
+    overwrites and no-ops both. Left alone, the ordering below would fire
+    Vallation, then swap the rune slots right back over to fire Valiance into a
+    guaranteed no-op every single engagement. Both entries in rune_ja carry
+    blocked_by (see lib/jobs/rune_fencer.lua) and the JA list is run through
+    action_core.filter_self_buff_blocked before it is evaluated, so whichever
+    landed first now simply holds the slot until it expires.
+
     The settings-key helpers below are exported rather than kept local because
     lib/ui/config.lua draws the same rows and must agree on every key -- the same
     reason it already requires lib/actions/roll for reset_state.
@@ -59,8 +71,12 @@ end
 
 -- Settings key prefix for a row. JA rows use their own lowercased name, so
 -- Vallation reads rune_vallation_*; the idle row passes the literal 'idle'.
+-- Spaces become underscores, matching common.lua's disabled_<name> convention
+-- (no multi-word rune_ja name exists today, but the UI calls this helper too,
+-- so it has to agree). gsub returns two values (string, count) -- parenthesized
+-- to return just the string, or the count would leak into the caller.
 function rune.setting_prefix(ability)
-    return ability.name:lower()
+    return (ability.name:lower():gsub(' ', '_'))
 end
 
 function rune.enable_key(prefix)
@@ -103,8 +119,12 @@ end
 function rune.execute(settings, job_def, main_level, sub_level, player_resource)
     -- The rune rows live inside the UI's Buffs section, so its master switch
     -- governs them too: turning Buffs off must not leave upkeep firing JAs with
-    -- no visible config left to stop it with.
-    if settings.buff_enabled == false then
+    -- no visible config left to stop it with. ui.begin_section defaults an unset
+    -- buff_enabled to OFF (same as buff.lua's `not settings.buff_enabled`), so
+    -- nil has to read as disabled here too -- `== false` would treat a fresh
+    -- config (buff_enabled never set) as enabled and run upkeep behind a closed,
+    -- disabled section.
+    if not settings.buff_enabled then
         return nil
     end
 
@@ -139,6 +159,13 @@ function rune.execute(settings, job_def, main_level, sub_level, player_resource)
     -- returns true -- so asking with it here would leave the try_use below with
     -- nothing to consume and the JA would never fire.
     local ja_list = common.filter_abilities_by_level(abilities.rune_ja or {}, settings, main_level, sub_level, job_def)
+    -- Vallation/Valiance are mutually exclusive server-side (see header comment
+    -- above): drop whichever is blocked by the other, or by Liement, before
+    -- evaluating any row. try_use does not check blocked_by on its own, so
+    -- every caller with a blocked_by ability filters it explicitly first (same
+    -- pattern as pet.lua's execute_maneuver and status_removal.lua). The runes
+    -- themselves have no blocked_by, so `available` above is untouched.
+    ja_list = action_core.filter_self_buff_blocked(ja_list, player_buffs)
     for _, ja in ipairs(ja_list) do
         local prefix = rune.setting_prefix(ja)
         if settings[rune.enable_key(prefix)] ~= false

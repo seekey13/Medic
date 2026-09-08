@@ -37,7 +37,11 @@ local MIN_CUSTOM_WINDOW_HEIGHT = 200
 -- so all four rows' dropdowns line up under each other despite "Idle Runes" and
 -- "Pflug" being different lengths. The slot width fits the longest display
 -- string any row can show ('Blind / Curse / Sleep', Lux on the Pflug row).
-local RUNE_LABEL_WIDTH = 100
+-- imgui.SameLine(offset, spacing) measures the offset from the window CONTENT
+-- ORIGIN, not from the label and not from DC.Indent.x -- the rune rows render
+-- inside imgui.Indent(ui.ABILITY_LIST_INDENT), so the real budget ahead of the
+-- checkbox is ABILITY_LIST_INDENT less than this constant, not the full value.
+local RUNE_LABEL_WIDTH = 130
 local RUNE_SLOT_WIDTH = 160
 
 -- Focus state (now saved to settings as names)
@@ -1515,7 +1519,13 @@ function ui_config.render(settings, job_def, callback)
                             end
                         end
 
-                        imgui.Separator()
+                        -- Only draw the divider when there's a buff list beneath it --
+                        -- a RUN main between level 5 and 19 has runes but no usable
+                        -- buff yet, and a trailing separator with nothing under it
+                        -- looks broken.
+                        if has_buffs then
+                            imgui.Separator()
+                        end
                     end
                 end
 
