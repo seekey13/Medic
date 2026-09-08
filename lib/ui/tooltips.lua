@@ -218,6 +218,23 @@ return {
         'on them when THEIR MP drops below Target\n' ..
         'Recover %%.',
 
+    runes =
+        'Rune Fencer runes (RUN main or sub).\n' ..
+        'Each row picks the runes to hold, by what they\n' ..
+        'do rather than by name: the element they add\n' ..
+        '(Idle Runes), the element they resist\n' ..
+        '(Vallation, Valiance), or the ailments they\n' ..
+        'defend against (Pflug).\n' ..
+        'Slots follow your RUN level: 1 rune at 1,\n' ..
+        '2 at 35, 3 at 65. Picking the same rune twice\n' ..
+        'keeps two of it up.\n' ..
+        'A job ability row takes over from Idle Runes\n' ..
+        'once its recast is ready: its runes go up,\n' ..
+        'then the ability fires, then Idle Runes takes\n' ..
+        'the slots back. Those three are combat-only.\n' ..
+        'Swipe and Lunge are yours to use -- Sidekick\n' ..
+        'never fires them, it only puts the runes back.',
+
     buffs =
         'For each checked buff, Sidekick checks the\n' ..
         'target\'s active buff IDs. If the configured\n' ..
