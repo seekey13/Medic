@@ -1,6 +1,9 @@
 --[[
     Rune Fencer job definition
     Defines abilities, validators, and configuration for Rune Fencer automation
+    - Runes (5) and the three rune-consuming JAs (Vallation 10, Pflug 40,
+      Valiance 50). Upkeep lives in lib/actions/rune.lua; the four config rows
+      sit at the top of the UI's Buffs section.
     - Buffs (Protect, Shell, bar spells, Regen, Refresh, Spikes, Aquaveil, Blink, Stoneskin, Foil, Phalanx, job abilities)
     - Healing (Vivacious Pulse)
     - Embolden (60, RUN main): stratagem-style JA that boosts the potency of the
@@ -17,7 +20,155 @@ return {
     resource_type = 'mp',
     
     abilities = {
-        
+
+        -- Runes (5, RUN main or sub). All eight are separate status effects that
+        -- share one recast (abilities.sql recastId 10, 5s), so more than one
+        -- stands at a time: 1 rune at RUN 1, 2 at 35, 3 at 65 (rune.max_runes).
+        -- Swipe and Lunge eat every rune the player holds -- Sidekick fires
+        -- neither, the player does; upkeep just puts them back.
+        --
+        -- element / resist / status are the three display strings the UI offers
+        -- INSTEAD of the rune's own name, which tells a user nothing at a glance:
+        -- the element the rune adds to your attacks, the element it resists, and
+        -- the ailments it defends against. Which one a row shows is the row's job
+        -- (Idle = element, Vallation/Valiance = resist, Pflug = status); settings
+        -- still store the rune's name.
+        rune = {
+            {
+                name = 'Ignis',
+                level = 5,
+                cost = 0,
+                recast_id = 10,
+                buff_id = 523,
+                element = 'Fire',
+                resist = 'Ice',
+                status = 'Paralyze / Bind',
+                command = '/ja "Ignis" <me>',
+            },
+            {
+                name = 'Gelus',
+                level = 5,
+                cost = 0,
+                recast_id = 10,
+                buff_id = 524,
+                element = 'Ice',
+                resist = 'Wind',
+                status = 'Silence / Weight',
+                command = '/ja "Gelus" <me>',
+            },
+            {
+                name = 'Flabra',
+                level = 5,
+                cost = 0,
+                recast_id = 10,
+                buff_id = 525,
+                element = 'Wind',
+                resist = 'Earth',
+                status = 'Petrify / Slow',
+                command = '/ja "Flabra" <me>',
+            },
+            {
+                name = 'Tellus',
+                level = 5,
+                cost = 0,
+                recast_id = 10,
+                buff_id = 526,
+                element = 'Earth',
+                resist = 'Lightning',
+                status = 'Stun',
+                command = '/ja "Tellus" <me>',
+            },
+            {
+                name = 'Sulpor',
+                level = 5,
+                cost = 0,
+                recast_id = 10,
+                buff_id = 527,
+                element = 'Lightning',
+                resist = 'Water',
+                status = 'Poison',
+                command = '/ja "Sulpor" <me>',
+            },
+            {
+                name = 'Unda',
+                level = 5,
+                cost = 0,
+                recast_id = 10,
+                buff_id = 528,
+                element = 'Water',
+                resist = 'Fire',
+                status = 'Amnesia / Plague',
+                command = '/ja "Unda" <me>',
+            },
+            {
+                name = 'Lux',
+                level = 5,
+                cost = 0,
+                recast_id = 10,
+                buff_id = 529,
+                element = 'Light',
+                resist = 'Dark',
+                status = 'Blind / Curse / Sleep',
+                command = '/ja "Lux" <me>',
+            },
+            {
+                name = 'Tenebrae',
+                level = 5,
+                cost = 0,
+                recast_id = 10,
+                buff_id = 530,
+                element = 'Dark',
+                resist = 'Light',
+                status = 'Charm / Sleep',
+                command = '/ja "Tenebrae" <me>',
+            },
+        },
+
+        -- Rune-consuming job abilities, in the order the UI rows and the upkeep
+        -- loop read them. Each carries its own three-rune set in settings; the
+        -- first row whose recast is ready takes the rune slots over from Idle
+        -- Runes, gets its runes up, then fires.
+        --
+        -- rune_field names which of the rune display strings that row's dropdowns
+        -- show: Vallation/Valiance are damage mitigation, so they read as the
+        -- element resisted; Pflug is ailment defence, so it reads as the ailments.
+        --
+        -- combat_only: these are long-recast mitigation abilities. Out of combat
+        -- the row drops out of filter_abilities_by_level entirely and Idle Runes
+        -- keeps the slots, which is the whole point of having an idle set.
+        rune_ja = {
+            {
+                name = 'Vallation',
+                level = 10,
+                cost = 0,
+                recast_id = 23,
+                buff_id = 531,
+                rune_field = 'resist',
+                combat_only = true,
+                command = '/ja "Vallation" <me>',
+            },
+            {
+                name = 'Valiance',
+                level = 50,
+                cost = 0,
+                recast_id = 113,
+                buff_id = 535,
+                rune_field = 'resist',
+                combat_only = true,
+                command = '/ja "Valiance" <me>',
+            },
+            {
+                name = 'Pflug',
+                level = 40,
+                cost = 0,
+                recast_id = 59,
+                buff_id = 533,
+                rune_field = 'status',
+                combat_only = true,
+                command = '/ja "Pflug" <me>',
+            },
+        },
+
         -- Buffs (Protect, Shell, bar spells, etc.)
         buff = {
             -- Protect spells
@@ -484,12 +635,22 @@ return {
         buff_enabled = true,
         focus_enabled = false,
         focus_threshold = 85,
+        -- Rune rows default ON but with every slot unset, so upkeep does nothing
+        -- at all until the user picks runes -- an upgrade never starts firing JAs
+        -- on its own.
+        rune_idle_enabled = true,
+        rune_vallation_enabled = true,
+        rune_valiance_enabled = true,
+        rune_pflug_enabled = true,
     },
     
-    -- Action priority order
+    -- Action priority order. Runes sit ahead of buffs: a rune is a 5-second JA on
+    -- a 300-second timer that the player's own Swipe/Lunge keeps stripping, so it
+    -- should not queue behind a Protect that is minutes from expiring.
     priority_order = {
         'item',
         'heal',
+        'rune',
         'buff',
         'rest',
     },
