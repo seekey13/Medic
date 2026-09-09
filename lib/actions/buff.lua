@@ -53,18 +53,16 @@ local TROUBADOUR_BUFF  = 348
 -- ponytail: entries for members who left the party linger; bounded and inert.
 local song_expiry = {}
 
--- Nightingale + Troubadour are popped together, and every song sung inside that
--- window is instant and lasts twice as long. So the moment both are up, every
--- song we hold a timer for is worth re-singing on the spot: the instances we
--- are holding are the short ones, and the window is far too brief to spend
--- waiting them out.
+-- Nightingale + Troubadour are popped as a pair, and every song sung while both
+-- hold casts much faster -- Nightingale halves the cast, or skips it entirely on
+-- a (merits x 25) - 25 percent roll, so instant only at 5/5, and Troubadour then
+-- adds 50% back -- and lasts twice as long. So the moment both are up, every song
+-- we hold a timer for is worth re-singing on the spot: the instances we are
+-- holding are the short ones, and the window is far too brief to wait them out.
 -- os.clock() of the moment the pair was first seen, nil while no window is
 -- armed. A row stamped before it is reported due (song_deadline); a row stamped
 -- after it was already sung inside the window, so the burst converges after one
 -- pass per song rather than looping.
--- Armed once per window and disarmed only when BOTH buffs are gone: the two
--- wear a moment apart, and a single frame where one is missing from the
--- snapshot must not restart the burst mid-window.
 -- Only rows we HOLD are forced. A song we hold no row for keeps falling back to
 -- buff memory, and it has to: memory is what stops a bard with more configured
 -- songs than song slots from cycling them forever.
@@ -76,35 +74,41 @@ local song_force_at = nil
 local function update_song_force(state)
     local buffs = state and state.player and state.player.buffs
     -- An empty list is allowed to disarm, on purpose: a transient failed read
-    -- costs at most one extra burst of casts that are instant and free anyway,
-    -- while refusing to disarm here would strand the window armed for a player
-    -- who legitimately holds zero buffs -- and since arming only happens while
-    -- song_force_at is nil, the next real pop would then silently burst nothing.
+    -- costs at most one extra burst of cheap casts, while refusing to disarm here
+    -- would strand the window armed for a player who legitimately holds zero
+    -- buffs -- and since arming only happens while song_force_at is nil, the next
+    -- real pop would then silently burst nothing.
     if not buffs then return end
-    local ng = action_core.has_any_buff(buffs, NIGHTINGALE_BUFF)
-    local tb = action_core.has_any_buff(buffs, TROUBADOUR_BUFF)
-    if ng and tb then
+    -- Disarmed the moment EITHER buff is gone, not only once both are. The flag
+    -- is a plain mirror of live state, so it can never be left armed across a
+    -- stretch this module never ran (a higher-priority module winning the tick,
+    -- or the loading / mounted / dead / casting guards) and then be re-read
+    -- against a later, unpaired Troubadour -- which would burst pre-window rows
+    -- outside any real window. The cost is that a one-frame dropout in the buff
+    -- snapshot re-arms and re-bursts, bounded at one extra pass per dropout.
+    if action_core.has_any_buff(buffs, NIGHTINGALE_BUFF)
+       and action_core.has_any_buff(buffs, TROUBADOUR_BUFF) then
         if not song_force_at then
             song_force_at = os.clock()
             common.debugf('[SONG] Nightingale + Troubadour up: re-singing every song we hold a timer for')
         end
-    elseif not ng and not tb then
+    else
         song_force_at = nil
     end
 end
 
--- True while songs are actually being forced. /sk panel reads it, so a sudden run
--- of songs says why it is happening. Both halves of song_deadline's test are
--- repeated here on purpose. The armed flag alone would lie twice over: the panel
--- renders ahead of automation_tick and outside its guards, so with automation off
--- (or mounted / dead / casting) nothing is refreshing song_force_at and it would
--- sit non-nil long after both buffs wore; and through a Nightingale tail the
--- window is still armed while song_deadline forces nothing. Reading live
--- Troubadour answers both -- it is the condition that actually gates a cast.
+-- True while songs are actually being forced: the window armed AND both buffs
+-- still live. song_deadline and /sk panel both read this rather than the flag,
+-- because the flag alone lies whenever nothing has refreshed it -- the panel
+-- renders ahead of automation_tick and outside its guards, so with automation
+-- off (or mounted / dead / casting) song_force_at sits non-nil long after the
+-- buffs wore. Reading them live is the condition that actually gates a cast.
 function buff.song_force_active()
     if not song_force_at then return false end
     local p = common.game_state and common.game_state.player
-    return action_core.has_any_buff(p and p.buffs, TROUBADOUR_BUFF)
+    local buffs = p and p.buffs
+    return action_core.has_any_buff(buffs, NIGHTINGALE_BUFF)
+       and action_core.has_any_buff(buffs, TROUBADOUR_BUFF)
 end
 
 -- server_id set of members whose song slots are wholly assigned to single-target
@@ -179,18 +183,14 @@ local function song_deadline(ability, member, no_verify)
     -- `target_buffs and manual and song_deadline(...) or nil` chain relies on
     -- that -- a falsy sentinel would be swallowed by that and/or idiom and
     -- silently disable the feature with no error.
-    -- Troubadour must still be up at the moment this is read, not merely when the
-    -- window armed: the doubling is Troubadour's alone (handle_song_finished reads
-    -- it there), and the two are not always popped together -- Troubadour tends to
-    -- go up before a pull and Nightingale later, so Nightingale can outlive it.
-    -- Forcing through that tail would re-sing a DOUBLED instance as a single-length
-    -- one, the exact regression this feature exists to prevent. Tested here rather
-    -- than in update_song_force so a one-frame Troubadour dropout costs a skipped
-    -- tick and nothing more: song_force_at is untouched, so the burst cannot
-    -- restart. A failed buff read reads as "not up" and skips too, the safe way.
-    if song_force_at and (row.at or 0) < song_force_at then
-        local p = common.game_state and common.game_state.player
-        if action_core.has_any_buff(p and p.buffs, TROUBADOUR_BUFF) then return 0 end
+    -- song_force_active re-reads both buffs live, so a pair that wore off between
+    -- the arm and this read forces nothing: the doubling is Troubadour's alone
+    -- (handle_song_finished reads it there), and re-singing through a tail where
+    -- either half has dropped would replace a DOUBLED instance with a
+    -- single-length one -- the exact regression this feature exists to prevent.
+    -- A failed buff read reads as "not up" and skips too, the safe way.
+    if song_force_at and (row.at or 0) < song_force_at and buff.song_force_active() then
+        return 0
     end
     -- Landing check, run once per stamp. The cast-FINISH packet proves the song
     -- resolved, not who it reached: an area song stamps everyone who was in
@@ -827,9 +827,9 @@ function buff.execute(settings, job_def, main_level, sub_level, player_resource,
             if sid and sid ~= 0 then slot_locked[sid] = true end
         end
     end
-    -- Set when a due [A] song is merely waiting out its recast: Phase 2 skips
-    -- single-target songs while it holds, since the area song would overwrite
-    -- them moments later. Declared out here because Phase 2 reads it.
+    -- Set when a due [A] song did not go out this tick for any reason: Phase 2
+    -- skips single-target songs while it holds, since the area song would
+    -- overwrite them moments later. Declared out here because Phase 2 reads it.
     local hold_songs = false
     if fast_casting or not has_pianissimo then
         -- Hold AOE for Group: members with at least one single-target (Pianissimo)
@@ -838,9 +838,11 @@ function buff.execute(settings, job_def, main_level, sub_level, player_resource,
         local aoe_excl = settings.hold_aoe_for_group
             and dedicated_targets(party_buff_config, song_keys, 1) or nil
         local area_processed = {}
-        -- Fast-casting only: set when an [A] song still needs (re)casting but
-        -- couldn't fire this tick (on recast). Forces a hold so the single-target
-        -- pass can't jump ahead and get overwritten by the area song later.
+        -- Set when an [A] song still needs (re)casting but couldn't fire this
+        -- tick -- recast, cost, ailment, anything. Forces a hold so the
+        -- single-target pass can't jump ahead and get overwritten by the area
+        -- song later. See the comment on the two holds below for what each mode
+        -- does with it.
         local area_pending = false
         for _, ability in ipairs(available_abilities) do
             local config_key = area_song_config_key(ability, settings, party_buff_config, area_processed)

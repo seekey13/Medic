@@ -1376,9 +1376,7 @@ local GATHER_ANNOUNCE_THROTTLE = 5.0
 -- periodic reminder rather than a one-shot. Opt-out via hold_aoe_announce: the hold
 -- itself is unaffected, only the party chat line is suppressed.
 function common.announce_gather(ability_name, settings)
-    if settings and settings.hold_aoe_announce == false then
-        return
-    end
+    if settings and settings.hold_aoe_announce == false then return end
     local now = os.clock()
     if (now - last_gather_announce) < GATHER_ANNOUNCE_THROTTLE then
         return
