@@ -134,9 +134,10 @@ return {
         -- show: Vallation/Valiance are damage mitigation, so they read as the
         -- element resisted; Pflug is ailment defence, so it reads as the ailments.
         --
-        -- combat_only: these are long-recast mitigation abilities. Out of combat
-        -- the row drops out of filter_abilities_by_level entirely and Idle Runes
-        -- keeps the slots, which is the whole point of having an idle set.
+        -- No combat_only flag: the row claims the rune slots and gets its set
+        -- standing out of combat too, so the mitigation is prepped before the
+        -- pull lands. rune.lua holds the ability itself back until is_combat()
+        -- -- firing a 300s-recast JA at nothing would waste it.
         --
         -- priority: all three tie on cost (0), and filter_abilities_by_level
         -- sorts its output by priority then cost -- table.sort gives no
@@ -158,7 +159,6 @@ return {
                 -- (delStatusEffectSilent); Liement (537) no-ops it outright.
                 blocked_by = { 535, 537 },  -- Valiance, Liement
                 rune_field = 'resist',
-                combat_only = true,
                 command = '/ja "Vallation" <me>',
             },
             {
@@ -172,7 +172,6 @@ return {
                 -- recast runs anyway. Liement (537) no-ops it too.
                 blocked_by = { 531, 537 },  -- Vallation, Liement
                 rune_field = 'resist',
-                combat_only = true,
                 command = '/ja "Valiance" <me>',
             },
             {
@@ -183,7 +182,6 @@ return {
                 recast_id = 59,
                 buff_id = 533,
                 rune_field = 'status',
-                combat_only = true,
                 command = '/ja "Pflug" <me>',
             },
         },

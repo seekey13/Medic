@@ -229,9 +229,9 @@ return {
         '2 at 35, 3 at 65. Picking the same rune twice\n' ..
         'keeps two of it up.\n' ..
         'A job ability row takes over from Idle Runes\n' ..
-        'once its recast is ready: its runes go up,\n' ..
-        'then the ability fires, then Idle Runes takes\n' ..
-        'the slots back. Those three are combat-only.\n' ..
+        'once its recast is ready: its runes go up in or\n' ..
+        'out of combat, the ability itself only fires in\n' ..
+        'combat, then Idle Runes takes the slots back.\n' ..
         'Swipe and Lunge are yours to use -- Sidekick\n' ..
         'never fires them, it only puts the runes back.',
 

@@ -10,7 +10,9 @@
     which is why buff_enabled gates the whole module. Idle Runes holds the slots
     normally; a rune-consuming JA row (Vallation 10, Valiance 50, Pflug 40) takes
     them over as soon as its own recast is ready, swaps in its own set, fires,
-    and hands them back. The JAs are combat_only, so out of combat only Idle runs.
+    and hands them back. Out of combat the row still claims the slots and puts its
+    runes up -- the prep is free -- but the ability itself is held until
+    is_combat(), so a 300s recast is never spent on nothing.
 
     Vallation and Valiance are mutually exclusive server-side: Vallation strips a
     standing Valiance (delStatusEffectSilent), and Valiance is a no-op on the
@@ -146,6 +148,13 @@ function rune.execute(settings, job_def, main_level, sub_level, player_resource)
                     -- timer and the Amnesia block on /ja.
                     return action_core.try_use(missing, job_def, settings, nil,
                         string.format('%s: %s', ja.name, missing.name))
+                end
+                -- Runes are prepped in or out of combat; the JA only fires in
+                -- combat. Out of combat the row keeps the slots -- return
+                -- rather than fall through, or idle upkeep would swap its set
+                -- straight back out.
+                if not common.is_combat() then
+                    return nil
                 end
                 return action_core.try_use(ja, job_def, settings, nil, ja.name)
             end

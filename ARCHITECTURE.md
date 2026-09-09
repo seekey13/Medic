@@ -617,7 +617,7 @@ only refills.
 
 Four configurable rows, all at the top of the UI's **Buffs** section and all under its `buff_enabled`
 master switch: **Idle Runes** plus one row per rune-consuming JA in `abilities.rune_ja` (Vallation 10 /
-`recast_id` 23, Valiance 50 / 113, Pflug 40 / 59, all `combat_only`). Each row stores its picks as
+`recast_id` 23, Valiance 50 / 113, Pflug 40 / 59). Each row stores its picks as
 `rune_<prefix>_1..3`, enabled by `rune_<prefix>_enabled`, where `<prefix>` is `idle` or the JA's
 lowercased name. The three JA rows always evaluate in that order — Vallation, Valiance, Pflug —
 because each entry pins an explicit `priority` (3/2/1) in the job file: all three tie on `cost` (0),
@@ -642,7 +642,12 @@ next tick as already-resting and never re-issue `/heal` — the same guard `pet.
 `geo.lua` already use. Otherwise it resolves in one order every tick: the first JA row that is
 enabled, level-available and **recast-zero** claims the rune slots — its missing runes go up one per
 tick, then the JA fires — and Idle Runes takes them back the moment that recast is running again. A
-JA row with no runes picked claims nothing and falls through. Availability is read with
+JA row with no runes picked claims nothing and falls through. **The rune set is prepped in or out of
+combat; only the JA itself is combat-gated.** None of the three carries `combat_only` — the row claims
+the slots and stands its runes up while idle, so the mitigation is ready before the pull — but with
+every rune up and `common.is_combat()` false, `execute` returns `nil` instead of firing, and returns
+rather than falling through so idle upkeep cannot swap the prepped set straight back out. Firing a
+300-second recast at no target would waste it. Availability is read with
 `action_core.is_ability_recast_zero`, never `is_usable`: the latter's post-recast delay is consuming,
 so using it to *decide* would leave the following `try_use` nothing to consume and the JA would never
 fire. The buff diff is `action_core.first_missing_stack`, shared with PUP maneuvers, so picking the
