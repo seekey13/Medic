@@ -42,29 +42,6 @@ local function is_invisible()
 end
 
 -- ============================================================================
--- Maneuver upkeep helpers
--- ============================================================================
-
--- First entry in `desired` (in slot order) not yet matched by an existing buff
--- of the same id, counting duplicates -- so picking Fire Maneuver in two slots
--- correctly asks for a second stack once the first is already up. Returns nil
--- once every desired maneuver (at its requested multiplicity) is satisfied.
-local function get_missing(desired, current_buffs)
-    local satisfied = {}
-    for _, ability in ipairs(desired) do
-        local id = ability.buff_id
-        local have = action_core.count_instances(current_buffs, id)
-        satisfied[id] = satisfied[id] or 0
-        if satisfied[id] < have then
-            satisfied[id] = satisfied[id] + 1
-        else
-            return ability
-        end
-    end
-    return nil
-end
-
--- ============================================================================
 -- Maneuver upkeep
 -- ============================================================================
 
@@ -115,7 +92,7 @@ function pet.execute_maneuver(settings, job_def, main_level, sub_level, player_r
     end
 
     -- Desired list in slot order. Not deduped -- the same element picked twice
-    -- means "keep two stacks up", which get_missing understands via count_instances.
+    -- means "keep two stacks up", which action_core.first_missing_stack understands via count_instances.
     local desired = {}
     for _, key in ipairs({ 'maneuver1_name', 'maneuver2_name', 'maneuver3_name' }) do
         local ability = find_maneuver(settings[key])
@@ -127,7 +104,9 @@ function pet.execute_maneuver(settings, job_def, main_level, sub_level, player_r
         return nil
     end
 
-    local missing = get_missing(desired, player_buffs)
+    -- Slot order, duplicates included: picking Fire in two slots asks for a
+    -- second stack once the first is up (action_core.first_missing_stack).
+    local missing = action_core.first_missing_stack(desired, player_buffs)
     if not missing then
         return nil
     end

@@ -11,6 +11,7 @@ local afk = require('lib.core.afk')
 local ui = require('lib.ui.components')
 local tooltips = require('lib.ui.tooltips')
 local roll = require('lib.actions.roll')  -- for reset_state() when a roll selection changes
+local rune = require('lib.actions.rune')  -- settings-key helpers + rune count for the Buffs section's rune rows
 
 -- UI state
 local is_open = { true }
@@ -31,6 +32,15 @@ local save_callback = nil
 -- that the window stays usable and keeps empty body space to right-click.
 local MIN_CUSTOM_WINDOW_WIDTH = 320
 local MIN_CUSTOM_WINDOW_HEIGHT = 200
+
+-- Rune rows at the top of the Buffs section. The label width is a fixed x offset
+-- so all four rows' dropdowns line up under each other despite "Idle Runes" and
+-- "Pflug" being different lengths. The slot width fits the longest display
+-- string any row can show ('Blind / Curse / Sleep', Lux on the Pflug row).
+-- SameLine's offset is from the window content origin and does NOT include
+-- DC.Indent.x, so the real budget is this less ui.ABILITY_LIST_INDENT.
+local RUNE_LABEL_WIDTH = 140
+local RUNE_SLOT_WIDTH = 100
 
 -- Focus state (now saved to settings as names)
 local focus_target_name = nil  -- Character name or nil for None
@@ -244,21 +254,29 @@ end
 -- unlabelled dropdown. `on_select`, if given, runs before `on_change` on every
 -- pick, including 'None' -- rolls use it to reset roll.lua's tracked totals;
 -- maneuvers, which allow picking the same element in more than one slot, don't
--- need it. Display strips a trailing ' Maneuver' (short_label) so the three
--- maneuver slots fit their row; settings still store the full name.
+-- need it. `display_fn(ability)` overrides what each entry READS AS -- the rune
+-- rows show the rune's effect rather than its name, since 'Tenebrae' tells a
+-- user nothing -- and defaults to stripping a trailing ' Maneuver' (short_label)
+-- so the three maneuver slots fit their row. Settings always store the full name
+-- either way, so a relabelled display can never rewrite somebody's config.
 local function short_label(name)
     return (name:gsub(' Maneuver$', ''))
 end
 
-local function render_ability_dropdown(label, setting_key, available_abilities, settings, on_change, tooltip, width, on_select)
+local function default_ability_label(ability)
+    return short_label(ability.name)
+end
+
+local function render_ability_dropdown(label, setting_key, available_abilities, settings, on_change, tooltip, width, on_select, display_fn)
     local current = settings[setting_key]
+    display_fn = display_fn or default_ability_label
 
     -- Show 'None' for an unset selection, or one the player can no longer use
     local current_display = 'None'
     local current_ability
     for _, ability in ipairs(available_abilities) do
         if ability.name == current then
-            current_display = short_label(ability.name)
+            current_display = display_fn(ability)
             current_ability = ability
             break
         end
@@ -282,7 +300,7 @@ local function render_ability_dropdown(label, setting_key, available_abilities, 
 
         for _, ability in ipairs(available_abilities) do
             local is_selected = (ability.name == current)
-            if imgui.Selectable(short_label(ability.name), is_selected) then
+            if imgui.Selectable(display_fn(ability), is_selected) then
                 choose(ability.name)
             end
             if is_selected then
@@ -298,6 +316,34 @@ local function render_ability_dropdown(label, setting_key, available_abilities, 
     if current_ability and current_ability.lucky then
         imgui.SameLine()
         imgui.TextColored(ui.LIGHT_GREEN, string.format('(%d)', current_ability.lucky))
+    end
+end
+
+-- One rune row: an enable checkbox, then one dropdown per rune slot the player's
+-- RUN level allows (1 at RUN 5, 2 at 35, 3 at 65). `field` names which ability
+-- field the dropdowns SHOW -- 'element' for Idle Runes, 'resist' for Vallation
+-- and Valiance, 'status' for Pflug -- because a rune's own name says nothing
+-- about what it does. The settings still store the rune's name.
+local function render_rune_row(ctx, label, prefix, field, available_runes, max_runes, settings, on_change)
+    local key = rune.enable_key(prefix)
+    ui.checkbox(ctx, label, key, { settings[key] ~= false })
+    ui.item_tooltip(tooltips.runes)
+
+    local function display(ability)
+        return ability[field] or ability.name
+    end
+
+    for i = 1, max_runes do
+        -- First slot lands on a fixed x so every row's dropdowns line up; the
+        -- rest just follow on with normal spacing.
+        if i == 1 then
+            imgui.SameLine(RUNE_LABEL_WIDTH, 0)
+        else
+            imgui.SameLine(0, 4)
+        end
+        local slot = rune.slot_key(prefix, i)
+        render_ability_dropdown('##' .. slot, slot, available_runes, settings, on_change,
+            nil, RUNE_SLOT_WIDTH, nil, display)
     end
 end
 
@@ -1424,8 +1470,13 @@ function ui_config.render(settings, job_def, callback)
             ui.end_section(ctx, is_open)
         end
 
-        -- Buff settings
-        if job_def and job_def.abilities.buff and has_usable_abilities(job_def.abilities.buff) then
+        -- Buff settings. Rune Fencer's four rune rows ride at the top of this
+        -- section, so it also opens for a job that has runes but no usable buff
+        -- (a RUN main below Barstone, or a low RUN subjob).
+        local rune_list = job_def and job_def.abilities.rune
+        local has_runes = rune_list and has_usable_abilities(rune_list)
+        local has_buffs = job_def and job_def.abilities.buff and has_usable_abilities(job_def.abilities.buff)
+        if has_buffs or has_runes then
             local is_open, is_enabled = ui.begin_section(ctx, 'Buffs', 'buff_enabled', false)
             ui.item_tooltip(tooltips.buffs)
             if is_open and is_enabled then
@@ -1439,8 +1490,44 @@ function ui_config.render(settings, job_def, callback)
                 end
                 
                 imgui.Indent(ui.ABILITY_LIST_INDENT)
+
+                -- Runes first: Idle Runes, then one row per rune-reading JA in
+                -- rune.ordered_ja order -- the same list lib/actions/rune.lua
+                -- evaluates, so the rows read top-down in the order they fire. A
+                -- JA row takes the rune slots over as soon as its own recast is
+                -- ready; Idle Runes holds them the rest of the time.
+                if has_runes then
+                    local available_runes = {}
+                    for _, ability in ipairs(rune_list) do
+                        if can_use_ability(ability) and not is_subjob_duplicate(job_def, ability) then
+                            table.insert(available_runes, ability)
+                        end
+                    end
+                    if #available_runes > 0 then
+                        local main_level, sub_level = common.get_player_level()
+                        local max_runes = rune.max_runes(
+                            rune.run_level(available_runes[1], main_level, sub_level))
+
+                        render_rune_row(ctx, 'Idle Runes', 'idle', 'element',
+                            available_runes, max_runes, settings, callback)
+
+                        for _, ja in ipairs(rune.ordered_ja(job_def)) do
+                            if can_use_ability(ja) and not is_subjob_duplicate(job_def, ja) then
+                                render_rune_row(ctx, ja.name, rune.setting_prefix(ja), ja.rune_field,
+                                    available_runes, max_runes, settings, callback)
+                            end
+                        end
+
+                        -- No divider with nothing under it: a RUN main between 5
+                        -- and 19 has runes but no usable buff yet.
+                        if has_buffs then
+                            imgui.Separator()
+                        end
+                    end
+                end
+
                 ctx.show_buff_warning = true
-                for _, ability in ipairs(job_def.abilities.buff) do
+                for _, ability in ipairs(job_def.abilities.buff or {}) do
                     if can_use_ability(ability) and not is_subjob_duplicate(job_def, ability) then
                         ui.render_ability(ctx, ability, job_def, 'buff')
                         render_ammo_count(ability, true)  -- name equipped tier (NIN Sange shuriken)
