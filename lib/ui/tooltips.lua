@@ -173,6 +173,13 @@ return {
         'every 5 seconds. Off by default -- AOE fires\n' ..
         'whenever its normal condition is met.',
 
+    hold_aoe_announce =
+        'Sends the "/p Gather together for <ability>"\n' ..
+        'party chat line while Hold AOE for Group is\n' ..
+        'holding a cast, at most once every 5\n' ..
+        'seconds. On by default. Turn off to hold\n' ..
+        'silently -- the hold itself is unchanged.',
+
     follow =
         'Auto-follows a party member or tracked\n' ..
         'target when they move away. Sends /follow\n' ..
@@ -333,6 +340,8 @@ return {
         'song duration (duration gear included) so songs never drop. Doubled\n' ..
         'automatically while Troubadour is up. While a timer is running that\n' ..
         'song is left alone, so an interrupted re-sing waits for the timer.\n' ..
+        'With Nightingale AND Troubadour both up, every song being timed is\n' ..
+        're-sung once at double length while the window lasts.\n' ..
         'Required if you fill your own song slots with [ME] songs and still\n' ..
         'want [A] songs sung for the party: your [ME] songs overwrite them on\n' ..
         'you, so only a timer can tell when the area songs are due again.',

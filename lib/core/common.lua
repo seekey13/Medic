@@ -1373,8 +1373,10 @@ local GATHER_ANNOUNCE_THROTTLE = 5.0
 -- Throttled to once per GATHER_ANNOUNCE_THROTTLE seconds across ALL callers (not
 -- per-ability), so it reads as one reminder line rather than one per held ability.
 -- Fires every time the hold is still active once the throttle clears, acting as a
--- periodic reminder rather than a one-shot.
-function common.announce_gather(ability_name)
+-- periodic reminder rather than a one-shot. Opt-out via hold_aoe_announce: the hold
+-- itself is unaffected, only the party chat line is suppressed.
+function common.announce_gather(ability_name, settings)
+    if settings and settings.hold_aoe_announce == false then return end
     local now = os.clock()
     if (now - last_gather_announce) < GATHER_ANNOUNCE_THROTTLE then
         return
@@ -3077,7 +3079,7 @@ function common.check_stratagem(job_def, settings, ability_key, ability)
     -- the group misses it and the self-buff check then suppresses recasts.
     -- Independent of the per-spell "Hold for Stratagem" setting.
     if strat.aoe and settings.hold_aoe_for_group and not common.group_in_aoe_range() then
-        common.announce_gather(ability.name)
+        common.announce_gather(ability.name, settings)
         return false
     end
 

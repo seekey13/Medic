@@ -54,10 +54,12 @@ A focused, support-oriented addon for Ashita v4 that automates healing, buffing,
 The one exception is **opt-in leader following** (off by default): with **Follow** enabled, Sidekick will `/follow` a chosen party member or tracked target when they walk beyond a set distance. It never moves your character unless you turn this on. A second, narrower exception is the **opt-in send-pet-at-target toggle** in the **Pet Control** section (Puppetmaster/Summoner/Beastmaster, off by default): it sends the *pet*, not the player, and only at the mob you pick from the dropdown beside the toggle — either your own cursor target (`<t>`, and only while you're engaged) or the battle target (`<bt>`, whatever the party is already fighting).
 
 ## Latest Updates
-### [2.8.0] - 2026-08-31
+### [2.8.0] - 2026-09-09
 
 ### Added
 - **Rune Fencer runes**: keeps your runes up — an **Idle Runes** set by default, swapped for **Vallation** / **Valiance** / **Pflug**'s own set as soon as that ability is ready so it is prepped before the pull, with the ability itself only firing in combat.
+- **Nightingale + Troubadour re-sing your songs**: with both up, every song being timed is re-sung at once so it lands faster and lasts twice as long (needs **Song Duration (s)**). — **Tai**
+- **Gather Alert**: the `/p Gather together for <ability>` line **Hold AOE for Group** sends while it waits can now be switched off, holding silently instead.
 - **Sections as tabs**: right-click any section header for *Display as tabs* (and any tab for *Display as section headers*); each tab carries its own enable checkbox, and disabled ones are dimmed. — **Bloodlust**
 - **Disabled tabs sort last**: sections you switch off move to the end of the tab bar, keeping the enabled ones together on the left.
 - **Custom window size**: right-click empty space in the config window for *Use a custom window size*, then drag the corner; *Fit window to contents* puts it back on auto-sizing. — **Toranko**
@@ -445,7 +447,8 @@ you switch jobs. Delete the file to reset that character back to defaults.
 - `follow_enabled` (boolean): Enable opt-in leader following (`/follow` the follow target when far); off by default. Ignored while `multisend_follow` is on
 - `follow_distance` (number): Distance in yalms the follow target must exceed before `/follow` is sent (1-15, default 5)
 - `follow_target` (string): Character name to follow — a party member (P1-P5) or a session tracked target — shared by leader following and the resting distance check (optional)
-- `hold_aoe_for_group` (boolean): Hold AOE casts (Protectra/Shellra/Bar, Diamondhide, area songs, fresh Phantom Rolls, Accession/Diffusion) until every alive, in-zone party member is in range (checkbox in `/sk panel`); off by default. While holding, sends `/p Gather together for <ability>` to the party, throttled to once every 5 seconds across all held abilities
+- `hold_aoe_for_group` (boolean): Hold AOE casts (Protectra/Shellra/Bar, Diamondhide, area songs, fresh Phantom Rolls, Accession/Diffusion) until every alive, in-zone party member is in range (checkbox in `/sk panel`); off by default. While holding, sends `/p Gather together for <ability>` to the party, throttled to once every 5 seconds across all held abilities (opt-out with `hold_aoe_announce`)
+- `hold_aoe_announce` (boolean): Send the `/p Gather together for <ability>` party chat line while `hold_aoe_for_group` is holding a cast (**Gather Alert** checkbox in `/sk panel`); on by default. Turning it off holds silently — the hold itself is unchanged
 - `afk_enabled` (boolean): Enable AFK Sleep — pause automation after `afk_timeout` with no party movement and no combat, resume on your own movement (checkbox in `/sk panel`); on by default
 - `afk_timeout` (number): Seconds of no party movement and no combat before sleeping (60-3600, default 600). Stored in seconds; the `/sk panel` field shows minutes
 - `geo_enabled` (boolean): Enable geo management (Geo buffs, Geo debuffs, and Full Circle / luopan handling)

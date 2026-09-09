@@ -130,6 +130,14 @@ local function song_timer_lines(gs, addon_settings)
     end
     add('ME', gs.player)
     for i = 1, 5 do add('P' .. i, gs.party and gs.party[i]) end
+
+    -- Only beside held songs: with Song Duration 0 nothing is held, so nothing
+    -- is being re-sung, and a line here would short-circuit the "why nothing is
+    -- held" explanations below.
+    if #lines > 0 and buff.song_force_active() then
+        lines[#lines + 1] = 'Nightingale + Troubadour: re-singing held songs'
+    end
+
     if #lines > 0 then return table.concat(lines, '\n') end
 
     -- Nothing held: say WHY, so an empty readout tells you whether stamping is
@@ -461,6 +469,24 @@ function panel.render(addon_settings, save_settings)
             end
             if imgui.IsItemHovered() then
                 imgui.SetTooltip(tooltips.hold_aoe_for_group)
+            end
+
+            -- Party chat alert for the hold above. Only meaningful while the hold
+            -- is on, so it greys out with it.
+            local hold_msg_var = { addon_settings.hold_aoe_announce ~= false }
+            imgui.SameLine(0, 20)
+            if not addon_settings.hold_aoe_for_group then
+                imgui.PushStyleVar(ImGuiStyleVar_Alpha, 0.5)
+            end
+            if imgui.Checkbox('Gather Alert', hold_msg_var) then
+                addon_settings.hold_aoe_announce = hold_msg_var[1]
+                if save_settings then save_settings() end
+            end
+            if not addon_settings.hold_aoe_for_group then
+                imgui.PopStyleVar()
+            end
+            if imgui.IsItemHovered() then
+                imgui.SetTooltip(tooltips.hold_aoe_announce)
             end
 
             -- Pianissimo Fast Casting (BRD main or sub). Persisted per-job.
