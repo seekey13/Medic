@@ -110,8 +110,8 @@ lib/
 │  item → recover → critical → heal_aoe → heal  │
 │  → debuff_removal → heal_pet →                │
 │  pet_debuff_removal → pet_control → wake →     │
-│  geo → maneuver → roll → buff → revive →      │
-│  follow → rest                                │
+│  geo → maneuver → roll → rune → buff →        │
+│  revive → follow → rest                       │
 └──────────┬────────────────────────────────────┘
            │ uses
            ▼
@@ -611,35 +611,43 @@ MP and TP recovery. Monitors percentage thresholds. Uses `action_core.first_comm
 
 Keeps Rune Fencer runes standing. The eight runes (`abilities.rune`, buff ids 523-530) are separate
 status effects sharing one 5-second recast (`recast_id = 10`); the number that stand at once follows
-the RUN level — 1 at 1, 2 at 35, 3 at 65 (`rune.max_runes`, off `rune.run_level`, which reads the sub
-level for a subjob RUN). Swipe and Lunge strip them; **Sidekick fires neither** — the player does — it
-only refills.
+the RUN level — 1 at 5, 2 at 35, 3 at 65 (`rune.max_runes`, off `rune.run_level`, which reads the sub
+level for a subjob RUN). Lunge strips every rune the player holds and Swipe the newest one;
+**Sidekick fires neither** — the player does — it only refills.
 
 Four configurable rows, all at the top of the UI's **Buffs** section and all under its `buff_enabled`
-master switch: **Idle Runes** plus one row per rune-consuming JA in `abilities.rune_ja` (Vallation 10 /
-`recast_id` 23, Valiance 50 / 113, Pflug 40 / 59). Each row stores its picks as
+master switch: **Idle Runes** plus one row per rune-*reading* JA in `abilities.rune_ja` (Vallation 10 /
+`recast_id` 23, Valiance 50 / 113, Pflug 40 / 59). None of those three consumes a rune — they scale off
+whatever is standing when they fire (`getAllRuneEffects` / `getHighestRuneEffect`); only Gambit, Rayke,
+Swipe and Lunge consume, and Sidekick fires none of those. So after a JA row fires, its set is still up
+and Idle Runes swaps it back out. Each row stores its picks as
 `rune_<prefix>_1..3`, enabled by `rune_<prefix>_enabled`, where `<prefix>` is `idle` or the JA's
 lowercased name. The three JA rows always evaluate in that order — Vallation, Valiance, Pflug —
 because each entry pins an explicit `priority` (3/2/1) in the job file: all three tie on `cost` (0),
 and `table.sort` gives no stability guarantee for a tie, so leaving `priority` unset would let
 `filter_abilities_by_level`'s sort return them in whatever order it felt like on a given run.
+`priority` is the *only* source of that order: `rune.ordered_ja(job_def)` sorts on it and both the
+upkeep loop and `config.lua`'s rows come through it, so the drawn order and the evaluated order cannot
+drift apart when the job file's table order changes.
 
-**Vallation and Valiance are mutually exclusive server-side**
+**Vallation and Valiance overlap, but only one direction is a server rule**
 (`scripts/globals/job_utils/rune_fencer.lua` `useVallationValiance`): Vallation calls
-`delStatusEffectSilent` on Valiance before applying, silently stomping a standing one, and Valiance is
+`delStatusEffectSilent` on Valiance before applying, silently stomping a standing one — the server lets
+it land, so Valiance in Vallation's `blocked_by` is **Sidekick policy**, not a server no-op: a 120-second
+self-only Vallation is a downgrade from a 180-second party-wide Valiance of the same potency. Valiance is
 a no-op on the caster — `JA_NO_EFFECT_2`, "No effect on \<Player\>" — while Vallation stands, and that
-no-op still burns Valiance's 300-second recast. Liement (RUN 77, status id 537) overwrites both and
-makes both a no-op too, though Sidekick never fires Liement itself. The job file marks the interaction
-with `blocked_by` (Vallation: `{535, 537}`, Valiance: `{531, 537}`; Pflug has no such interaction) and
+no-op still burns Valiance's 300-second recast. Liement (RUN 85 on this server, status id 537)
+overwrites both and makes both a no-op too, though Sidekick never fires Liement itself. The job file
+marks the interaction with `blocked_by` (Vallation: `{535, 537}`, Valiance: `{531, 537}`; Pflug has no
+such interaction) and
 `execute` runs `abilities.rune_ja` through `action_core.filter_self_buff_blocked` right after
 `filter_abilities_by_level` produces it, before evaluating any row — the same pattern `pet.lua`'s
 Overload handling and `status_removal.lua` use, since `try_use` does not check `blocked_by` on its own.
 
 `execute` holds off entirely while `common.is_resting()` is true: `'rune'` is deliberately absent from
-`automation.lua`'s `REST_BREAKING`, since upkeep is not urgent, so without this guard a rune fired
-mid-rest would stand the player up while `is_resting()` stayed true and `rest.lua` would treat the
-next tick as already-resting and never re-issue `/heal` — the same guard `pet.lua`, `buff.lua` and
-`geo.lua` already use. Otherwise it resolves in one order every tick: the first JA row that is
+`automation.lua`'s `REST_BREAKING`, since upkeep is not urgent enough to interrupt a rest, so without
+this guard a rune would stand the player up mid-rest just to refresh upkeep — the same guard `pet.lua`,
+`buff.lua` and `geo.lua` already use. Otherwise it resolves in one order every tick: the first JA row that is
 enabled, level-available and **recast-zero** claims the rune slots — its missing runes go up one per
 tick, then the JA fires — and Idle Runes takes them back the moment that recast is running again. A
 JA row with no runes picked claims nothing and falls through. **The rune set is prepped in or out of
@@ -654,8 +662,9 @@ fire. The buff diff is `action_core.first_missing_stack`, shared with PUP maneuv
 same rune in two slots correctly asks for two copies.
 
 The module also owns the settings-key helpers (`enable_key`, `slot_key`, `setting_prefix`, `max_runes`,
-`run_level`, `desired_runes`) because `lib/ui/config.lua` draws the same rows and must agree on every
-key — the same reason it already requires `lib/actions/roll` for `reset_state`.
+`run_level`) and `ordered_ja`, because `lib/ui/config.lua` draws the same rows and must agree on every
+key and on the row order — the same reason it already requires `lib/actions/roll` for `reset_state`.
+`desired_runes` is file-local: nothing outside the module reads a row's picks.
 
 **Rune names are never shown.** Each rune carries three display strings — `element` (what it adds),
 `resist` (what it defends against elementally) and `status` (which ailments it defends against) — and

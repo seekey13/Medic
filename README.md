@@ -244,6 +244,7 @@ Currently implemented support jobs:
   - TP recovery with **Meditate**
 
 - **Rune Fencer** (RUN)
+  - **Runes** (level 5, RUN main or sub): four rows at the top of the **Buffs** section — an **Idle Runes** set to hold normally, plus one set each for **Vallation**, **Valiance** and **Pflug**, which take the rune slots over when their recast is ready. Every slot starts empty, so nothing fires until you pick runes; the dropdowns name what a rune *does* (the element it adds, the element it resists, the ailments it defends against) instead of its name. **Swipe and Lunge are never fired** — you spend the runes, Sidekick puts them back
   - AOE healing with job abilities (Vivacious Pulse)
   - Buff with enhancing magic (Protect I-III, Shell I-IV, Regen I-III, Refresh, Barfire, Barblizzard, Baraero, Barstone, Barthunder, Barwater, etc.)
   - **Embolden** (level 60, RUN main): an **E** button on every enhancing magic row opens a popup — **Enable** fires Embolden before the spell to boost its potency; **Hold for Embolden** skips the spell until Embolden is ready (off by default: the spell still casts unboosted when Embolden is on cooldown). Not offered on the Spikes, which it doesn't boost
@@ -367,6 +368,7 @@ Sidekick/
 │   │   ├── rest.lua          # Automatic resting (/heal)
 │   │   ├── revive.lua        # Raise dead members
 │   │   ├── roll.lua          # Corsair Phantom Rolls / Double-Up
+│   │   ├── rune.lua          # Rune Fencer rune upkeep (idle set + Vallation/Valiance/Pflug sets)
 │   │   └── status_removal.lua # Debuff removal & sleep wake (single + AOE)
 │   ├── jobs/
 │   │   ├── bard.lua          # Bard abilities
@@ -432,6 +434,8 @@ you switch jobs. Delete the file to reset that character back to defaults.
 - `maneuver1_name` / `maneuver2_name` / `maneuver3_name` (string): the Maneuver each of the three slots keeps up, stored as the full name (e.g. `Fire Maneuver`) while the dropdowns show the element alone; the same element in two slots keeps two stacks up
 - `pet_control_enabled` (boolean): Enable send-pet-at-target — **Deploy** (PUP) / **Assault** (SMN) / **Fight** (BST); off by default
 - `pet_control_target` (string): which mob the pet is sent at — `<t>` (default; your own cursor target, and only while you're engaged) or `<bt>` (the battle target, no engaged check)
+- `rune_idle_enabled` / `rune_vallation_enabled` / `rune_valiance_enabled` / `rune_pflug_enabled` (boolean): Enable each Rune Fencer rune row (RUN main or sub); on by default, but every slot starts empty so a row does nothing until runes are picked
+- `rune_idle_1..3` / `rune_vallation_1..3` / `rune_valiance_1..3` / `rune_pflug_1..3` (string): the rune each slot of that row keeps up, stored as the rune's name (e.g. `Ignis`) while the dropdowns show what it does; the same rune in two slots keeps two of it up. Slots available follow your RUN level — 1 at 5, 2 at 35, 3 at 65
 - `recover_enabled` (boolean): Enable MP/TP recovery
 - `rest_enabled` (boolean): Enable automatic resting (MP-based jobs only)
 - `rest_timer` (number): Timer duration in seconds before resting starts (1-20, default 5)

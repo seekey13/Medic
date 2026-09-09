@@ -2,26 +2,32 @@
     Rune action module -- Rune Fencer rune upkeep.
 
     Runes (Ignis .. Tenebrae) are eight status effects sharing one 5-second
-    recast (recastId 10); more than one stands at a time -- 1 rune at RUN 1, 2 at
-    35, 3 at 65. Swipe and Lunge eat them all. Sidekick fires neither (they are
-    damage); it only puts the runes back.
+    recast (recastId 10); more than one stands at a time -- 1 rune at RUN 5, 2 at
+    35, 3 at 65. Lunge eats every rune the player holds, Swipe the newest one.
+    Sidekick fires neither (they are damage); it only puts the runes back.
 
     Two kinds of row, both configured at the top of the UI's Buffs section --
     which is why buff_enabled gates the whole module. Idle Runes holds the slots
-    normally; a rune-consuming JA row (Vallation 10, Valiance 50, Pflug 40) takes
-    them over as soon as its own recast is ready, swaps in its own set, fires,
-    and hands them back. Out of combat the row still claims the slots and puts its
-    runes up -- the prep is free -- but the ability itself is held until
-    is_combat(), so a 300s recast is never spent on nothing.
+    normally; a rune-reading JA row (Vallation 10, Valiance 50, Pflug 40) takes
+    them over as soon as its own recast is ready and swaps in its own set. The
+    JAs only READ the standing runes (getAllRuneEffects / getHighestRuneEffect):
+    none of the three consumes one, so the set is still up after the JA fires and
+    Idle Runes swaps it straight back out. Out of combat the row still claims the
+    slots and puts its runes up -- the prep is free -- but the ability itself is
+    held until is_combat(), so a 300s recast is never spent on nothing.
 
-    Vallation and Valiance are mutually exclusive server-side: Vallation strips a
-    standing Valiance (delStatusEffectSilent), and Valiance is a no-op on the
-    caster while Vallation stands but spends its 300s recast anyway. Liement (537)
-    no-ops both. Handled by blocked_by in the job file plus
+    Vallation and Valiance overlap, but only one direction is a server rule:
+    Valiance is a no-op on the CASTER while Vallation stands and spends its 300s
+    recast anyway, so blocking it there is mechanical. Vallation the server lets
+    land, silently stomping a standing Valiance (delStatusEffectSilent) -- blocking
+    that one is Sidekick policy, since a 120s self-only Vallation is a downgrade
+    from a 180s party-wide Valiance of the same potency. Liement (537) no-ops both
+    for real. Handled by blocked_by in the job file plus
     action_core.filter_self_buff_blocked below; see CHANGELOG 2.8.0 for the detail.
 
-    The settings-key helpers are exported because lib/ui/config.lua draws the same
-    rows and must agree on every key (as it already does with roll's reset_state).
+    The settings-key helpers and ordered_ja are exported because lib/ui/config.lua
+    draws the same rows and must agree with this module on every key and on the
+    row order (as it already does with roll's reset_state).
 ]]--
 
 local rune = {}
@@ -71,11 +77,30 @@ end
 -- Rune selection
 -- ============================================================================
 
+-- The rune_ja rows in evaluation order. filter_abilities_by_level sorts its
+-- output by priority descending, which is why the job file pins priority 3/2/1;
+-- the UI runs no such filter, so it comes through here rather than walking the
+-- raw table and the two orderings cannot drift apart.
+function rune.ordered_ja(job_def)
+    local list = {}
+    for _, ja in ipairs(((job_def or {}).abilities or {}).rune_ja or {}) do
+        table.insert(list, ja)
+    end
+    table.sort(list, function(a, b) return (a.priority or 0) > (b.priority or 0) end)
+    return list
+end
+
+-- Every rune row treats an unset enable key as enabled; both readers spell that
+-- the one way. buff_enabled in execute() is the deliberate exception.
+local function row_enabled(settings, prefix)
+    return settings[rune.enable_key(prefix)] ~= false
+end
+
 -- The runes a row wants, in slot order, capped at the level's rune count. An
 -- unset slot is skipped, not treated as the end of the list -- slot 3 still
 -- counts when slot 2 reads None. Duplicates are kept: the same rune twice means
 -- "keep two up", which first_missing_stack understands.
-function rune.desired_runes(settings, prefix, available, max_runes)
+local function desired_runes(settings, prefix, available, max_runes)
     local desired = {}
     for i = 1, max_runes do
         local name = settings[rune.slot_key(prefix, i)]
@@ -103,9 +128,9 @@ function rune.execute(settings, job_def, main_level, sub_level, player_resource)
         return nil
     end
 
-    -- 'rune' is deliberately absent from automation.lua's REST_BREAKING, so
-    -- nothing clears common.is_resting() for us: firing here would stand the
-    -- player up mid-rest and stall MP recovery until they moved.
+    -- 'rune' is deliberately absent from automation.lua's REST_BREAKING because
+    -- upkeep is not urgent enough to interrupt a rest -- so hold off rather than
+    -- stand the player up mid-rest to refresh a rune.
     if common.is_resting() then
         return nil
     end
@@ -125,21 +150,21 @@ function rune.execute(settings, job_def, main_level, sub_level, player_resource)
     local max_runes = rune.max_runes(rune.run_level(available[1], main_level, sub_level))
     local player_buffs = (common.game_state.player or {}).buffs or {}
 
-    -- Rune-consuming JAs first, in job-file order (Vallation, Valiance, Pflug).
+    -- Rune-reading JAs first, in priority order (Vallation, Valiance, Pflug).
     -- is_ability_recast_zero, NOT is_usable: this only decides whether the row
     -- takes the slots over, and is_usable's post-recast delay is consuming --
     -- asking with it here would leave the try_use below nothing to consume and
     -- the JA would never fire.
-    local ja_list = common.filter_abilities_by_level(abilities.rune_ja or {}, settings, main_level, sub_level, job_def)
+    local ja_list = common.filter_abilities_by_level(rune.ordered_ja(job_def), settings, main_level, sub_level, job_def)
     -- try_use does not check blocked_by, so every caller filters explicitly
     -- first (same as pet.lua's Overload handling). Runes carry no blocked_by,
     -- so `available` is untouched.
     ja_list = action_core.filter_self_buff_blocked(ja_list, player_buffs)
     for _, ja in ipairs(ja_list) do
         local prefix = rune.setting_prefix(ja)
-        if settings[rune.enable_key(prefix)] ~= false
+        if row_enabled(settings, prefix)
             and action_core.is_ability_recast_zero(ja.recast_id) then
-            local desired = rune.desired_runes(settings, prefix, available, max_runes)
+            local desired = desired_runes(settings, prefix, available, max_runes)
             -- A row with no runes picked claims nothing: fall through.
             if #desired > 0 then
                 local missing = action_core.first_missing_stack(desired, player_buffs)
@@ -162,11 +187,11 @@ function rune.execute(settings, job_def, main_level, sub_level, player_resource)
     end
 
     -- Idle upkeep: whatever the player wants standing the rest of the time.
-    if settings[rune.enable_key('idle')] == false then
+    if not row_enabled(settings, 'idle') then
         return nil
     end
 
-    local desired = rune.desired_runes(settings, 'idle', available, max_runes)
+    local desired = desired_runes(settings, 'idle', available, max_runes)
     if #desired == 0 then
         return nil
     end

@@ -320,7 +320,7 @@ local function render_ability_dropdown(label, setting_key, available_abilities, 
 end
 
 -- One rune row: an enable checkbox, then one dropdown per rune slot the player's
--- RUN level allows (1 at RUN 1, 2 at 35, 3 at 65). `field` names which ability
+-- RUN level allows (1 at RUN 5, 2 at 35, 3 at 65). `field` names which ability
 -- field the dropdowns SHOW -- 'element' for Idle Runes, 'resist' for Vallation
 -- and Valiance, 'status' for Pflug -- because a rune's own name says nothing
 -- about what it does. The settings still store the rune's name.
@@ -1491,10 +1491,11 @@ function ui_config.render(settings, job_def, callback)
                 
                 imgui.Indent(ui.ABILITY_LIST_INDENT)
 
-                -- Runes first: Idle Runes, then one row per rune-consuming JA in
-                -- job-file order. A JA row takes the rune slots over as soon as
-                -- its own recast is ready; Idle Runes holds them the rest of the
-                -- time. See lib/actions/rune.lua.
+                -- Runes first: Idle Runes, then one row per rune-reading JA in
+                -- rune.ordered_ja order -- the same list lib/actions/rune.lua
+                -- evaluates, so the rows read top-down in the order they fire. A
+                -- JA row takes the rune slots over as soon as its own recast is
+                -- ready; Idle Runes holds them the rest of the time.
                 if has_runes then
                     local available_runes = {}
                     for _, ability in ipairs(rune_list) do
@@ -1510,7 +1511,7 @@ function ui_config.render(settings, job_def, callback)
                         render_rune_row(ctx, 'Idle Runes', 'idle', 'element',
                             available_runes, max_runes, settings, callback)
 
-                        for _, ja in ipairs(job_def.abilities.rune_ja or {}) do
+                        for _, ja in ipairs(rune.ordered_ja(job_def)) do
                             if can_use_ability(ja) and not is_subjob_duplicate(job_def, ja) then
                                 render_rune_row(ctx, ja.name, rune.setting_prefix(ja), ja.rune_field,
                                     available_runes, max_runes, settings, callback)

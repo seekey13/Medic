@@ -227,7 +227,8 @@ return {
         'defend against (Pflug).\n' ..
         'Slots follow your RUN level: 1 rune at 5,\n' ..
         '2 at 35, 3 at 65. Picking the same rune twice\n' ..
-        'keeps two of it up.\n' ..
+        'keeps two of it up. Every slot starts empty:\n' ..
+        'a row with nothing picked does nothing.\n' ..
         'A job ability row takes over from Idle Runes\n' ..
         'once its recast is ready: its runes go up in or\n' ..
         'out of combat, the ability itself only fires in\n' ..

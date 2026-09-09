@@ -1,7 +1,7 @@
 --[[
     Rune Fencer job definition
     Defines abilities, validators, and configuration for Rune Fencer automation
-    - Runes (unlocked at level 5, all eight) and the three rune-consuming JAs, in
+    - Runes (unlocked at level 5, all eight) and the three rune-reading JAs, in
       job/priority order: Vallation 10, Valiance 50, Pflug 40. Upkeep lives in
       lib/actions/rune.lua; the four config rows sit at the top of the UI's Buffs
       section.
@@ -24,9 +24,9 @@ return {
 
         -- Runes (5, RUN main or sub). All eight are separate status effects that
         -- share one recast (abilities.sql recastId 10, 5s), so more than one
-        -- stands at a time: 1 rune at RUN 1, 2 at 35, 3 at 65 (rune.max_runes).
-        -- Swipe and Lunge eat every rune the player holds -- Sidekick fires
-        -- neither, the player does; upkeep just puts them back.
+        -- stands at a time: 1 rune at RUN 5, 2 at 35, 3 at 65 (rune.max_runes).
+        -- Lunge eats every rune the player holds, Swipe the newest one -- Sidekick
+        -- fires neither, the player does; upkeep just puts them back.
         --
         -- element / resist / status are the three display strings the UI offers
         -- INSTEAD of the rune's own name, which tells a user nothing at a glance:
@@ -125,8 +125,10 @@ return {
             },
         },
 
-        -- Rune-consuming job abilities, in the order the UI rows and the upkeep
-        -- loop read them. Each carries its own three-rune set in settings; the
+        -- Rune-reading job abilities: each scales off the runes standing when it
+        -- fires (getAllRuneEffects / getHighestRuneEffect) and consumes none of
+        -- them -- only Gambit, Rayke, Swipe and Lunge do that, and Sidekick fires
+        -- none of those. Each carries its own three-rune set in settings; the
         -- first row whose recast is ready takes the rune slots over from Idle
         -- Runes, gets its runes up, then fires.
         --
@@ -146,7 +148,9 @@ return {
         -- like on a given run. rune.lua's execute() just walks the list and
         -- takes the first ready ability, trusting it to already be in the
         -- intended order (Vallation, then Valiance, then Pflug), so that order
-        -- has to be pinned here in the data, not left to table order.
+        -- has to be pinned here in the data, not left to table order. It is the
+        -- ONLY source of that order: rune.ordered_ja sorts on it for both the
+        -- upkeep loop and the UI rows, so table order here is cosmetic.
         rune_ja = {
             {
                 name = 'Vallation',
@@ -155,9 +159,12 @@ return {
                 priority = 3,
                 recast_id = 23,
                 buff_id = 531,
-                -- Vallation silently stomps a standing Valiance
-                -- (delStatusEffectSilent); Liement (537) no-ops it outright.
-                blocked_by = { 535, 537 },  -- Valiance, Liement
+                -- Liement (537) no-ops Vallation outright. The 535 entry is
+                -- policy, not a server rule: the server lets Vallation land and
+                -- silently stomps a standing Valiance (delStatusEffectSilent),
+                -- but that trades a 180s party-wide Valiance for a 120s self-only
+                -- Vallation of the same potency -- a downgrade, so don't.
+                blocked_by = { 535, 537 },  -- Valiance (policy), Liement
                 rune_field = 'resist',
                 command = '/ja "Vallation" <me>',
             },
