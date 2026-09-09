@@ -39,8 +39,8 @@ local MIN_CUSTOM_WINDOW_HEIGHT = 200
 -- string any row can show ('Blind / Curse / Sleep', Lux on the Pflug row).
 -- SameLine's offset is from the window content origin and does NOT include
 -- DC.Indent.x, so the real budget is this less ui.ABILITY_LIST_INDENT.
-local RUNE_LABEL_WIDTH = 130
-local RUNE_SLOT_WIDTH = 160
+local RUNE_LABEL_WIDTH = 140
+local RUNE_SLOT_WIDTH = 100
 
 -- Focus state (now saved to settings as names)
 local focus_target_name = nil  -- Character name or nil for None

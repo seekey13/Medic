@@ -2533,6 +2533,14 @@ end
 -- here and config.lua applies it at the top of the next frame.
 local pending_window_size_mode = nil
 
+-- NoOpenOverItems only suppresses this window's menu over widgets imgui gives an id to
+-- (buttons, checkboxes, combos). Ability rows are imgui.Text, which has no id, so their
+-- own Combat/Idle popup opens AND this one opens on the same right-click -- and the later
+-- OpenPopup at the same popup depth replaces the earlier, so the ability menu is lost.
+-- Set by begin_opaque_context_item whenever an item-level popup is up, consumed by
+-- render_window_size_menu at the end of the body to stand this menu down for that frame.
+local item_popup_open = false
+
 -- Called by config.lua BEFORE imgui.Begin. Nothing needs re-applying on the frame the
 -- mode flips: dropping AlwaysAutoResize leaves the window at the size the auto-fit had
 -- just produced, which is exactly where the user wants to start dragging from.
@@ -2553,6 +2561,11 @@ end
 -- separator, then a single Selectable describing the switch. Submitted once per frame,
 -- at the end of the window body.
 function ui_components.render_window_size_menu(ctx)
+    -- An item's own right-click menu owns the click (see item_popup_open).
+    if item_popup_open then
+        item_popup_open = false
+        return
+    end
     local to_custom = ctx.settings.window_size_mode ~= 'custom'
     if ui_components.begin_opaque_context_window('##cmenu_window_size') then
         imgui.TextColored(LIGHT_GRAY,
@@ -2623,6 +2636,7 @@ end
 -- window begun -- the exact leak the previous-frame tracking exists to stop.
 function ui_components.reset_opaque_tracking()
     opaque_was_open = {}
+    item_popup_open = false
 end
 
 -- Pair with end_opaque_combo (only when this returns true, per BeginCombo rules).
@@ -2650,12 +2664,14 @@ function ui_components.begin_opaque_context_item(popup_id)
     arm_opaque_bg(popup_id)
     local open = imgui.BeginPopupContextItem(popup_id)
     track_opaque_open(popup_id, open)
+    if open then item_popup_open = true end
     return open
 end
 
 -- NoOpenOverItems is what keeps this menu off the section headers and tabs, which
 -- carry the display-mode menu instead, and off every widget row that has a popup of
--- its own -- it opens on empty window space only.
+-- its own -- it opens on empty window space only. It only sees widgets imgui gives an
+-- id to; id-less imgui.Text rows are covered by item_popup_open instead.
 local POPUP_FLAGS_EMPTY_SPACE_ONLY = ImGuiPopupFlags_MouseButtonRight + ImGuiPopupFlags_NoOpenOverItems
 
 -- Right-click anywhere in the CURRENT window that is not a widget. Pair with
