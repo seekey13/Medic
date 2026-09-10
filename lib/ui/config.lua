@@ -19,9 +19,12 @@ local ui_visible = false
 local widget_visible = false  -- floating header-only window (/sk widget)
 local widget_open = { true }  -- Ashita's Begin drops the flags arg unless p_open is a table
 local force_expand = false  -- when true, next render un-collapses the window once
--- Last error caught out of the config window body, so a fault that repeats every
--- frame is logged once rather than at frame rate. Cleared by the first clean frame.
-local last_render_error = nil
+-- Last error caught out of each guarded window body, so a fault that repeats every
+-- frame is logged once rather than at frame rate. Keyed by window, not a single
+-- string: the config window and the widget render in the same frame from separate
+-- Begin/End pairs, so one shared slot would let a clean widget clear a faulting
+-- config window's message and print it again on the very next frame.
+local last_render_error = {}
 -- Upper bound on the widget's job line: 'Puppetmaster' is the longest job name
 -- in common.job_data, so both slots at 2-digit levels is wider than any real
 -- main/sub combo. Measured, not hardcoded in pixels, so it tracks the font.
@@ -724,10 +727,10 @@ end
 function ui_config.show()
     ui_visible = true
     is_open[1] = true
-    -- Only a clean frame clears this, and a closed window renders none, so a fault
+    -- Only a clean frame clears these, and a closed window renders none, so a fault
     -- that outlives the close would be swallowed on the reopen -- a short window and
     -- nothing in the log. Reopening is a fresh look at the problem; report it again.
-    last_render_error = nil
+    last_render_error = {}
     -- A popup left open when the window last closed leaves stale was-open
     -- state that would arm a bg-alpha override on the reopen's first frame.
     ui.reset_opaque_tracking()
@@ -758,11 +761,40 @@ function ui_config.toggle_widget()
     widget_visible = not widget_visible
     if widget_visible then
         ui.reset_opaque_tracking()  -- same stale-popup guard as show()
+        last_render_error = {}      -- and the same fresh-report-on-reopen as show()
     end
 end
 
 function ui_config.is_widget_visible()
     return widget_visible
+end
+
+-- Run a window body under a Lua error guard, the same tolerance
+-- automation.execute_priority_actions gives a throwing action module. A thrown error
+-- would otherwise escape with imgui.Begin still open, and ImGui asserts on an
+-- unbalanced stack rather than tolerating one, turning a recoverable Lua fault into a
+-- hard client failure. The caller's End()/PopStyleVar() balance the window itself;
+-- on_abort unwinds whatever the body opened inside it (nil for a window that opens
+-- nothing). xpcall rather than pcall because the message alone names only the throw
+-- site -- in a body this deeply nested, the chain that reached it is the useful half.
+local function guarded_body(what, body, on_abort)
+    local ok, err = xpcall(body, debug.traceback)
+    if ok then
+        last_render_error[what] = nil
+        return
+    end
+    if on_abort then on_abort() end
+    -- The same broken frame repeats at frame rate, so only the first of a run of
+    -- identical errors is printed -- otherwise the log scrolls away the very message
+    -- it is reporting. Keyed on the 'file:line: message' first line and not on the
+    -- whole traceback: the trailing frames name the path that reached the fault, so
+    -- one bad call reached from two sections would otherwise defeat the dedupe.
+    local message = tostring(err)
+    local key = message:match('^[^\n]*') or message
+    if key ~= last_render_error[what] then
+        last_render_error[what] = key
+        common.errorf('%s render error: %s', what, message)
+    end
 end
 
 -- Floating widget: just the profile/job and Start/Stop rows, no title bar and
@@ -784,7 +816,11 @@ function ui_config.render_widget(settings, job_def, callback)
     -- renders, so nothing ever flips widget_open -- it is a dummy.
     if imgui.Begin('Sidekick Widget', widget_open,
         ImGuiWindowFlags_AlwaysAutoResize + ImGuiWindowFlags_NoTitleBar) then
-        render_header(ctx)
+        -- render_header is the same function the config window draws under its own
+        -- guard, and the config window draws it only while this widget is closed --
+        -- so leaving this one bare would protect it in the case where it is not used
+        -- and expose it in the case where it is. No tab chrome here, so no on_abort.
+        guarded_body('Widget', function() render_header(ctx) end)
     end
     imgui.End()
     imgui.PopStyleVar()
@@ -987,13 +1023,10 @@ function ui_config.render(settings, job_def, callback)
     imgui.PushStyleVar(ImGuiStyleVar_Alpha, (settings.ui_opacity or 100) / 100)
     if imgui.Begin(window_title, is_open, window_flags) then
 
-        -- A Lua error anywhere in the body would escape with Begin still open --
-        -- and, in tab mode, BeginTabBar/BeginTabItem too -- which ImGui asserts on,
-        -- turning a recoverable Lua error into a hard client failure. Catch it the
-        -- way automation.execute_priority_actions tolerates a throwing action
-        -- module: unwind the tab chrome, log once, and let the End/PopStyleVar
-        -- below balance the rest. The frame renders short; the next one is normal.
-        local body_ok, body_err = pcall(function()
+        -- In tab mode this body also has BeginTabBar open, and usually a BeginTabItem
+        -- inside it, so abort_sections is what unwinds them. The frame renders short;
+        -- the next one is normal. See guarded_body for the rest.
+        guarded_body('Config UI', function()
 
             -- Profile/job + Start/Stop rows move to the floating widget while it is open.
             if not widget_visible then
@@ -1703,20 +1736,7 @@ function ui_config.render(settings, job_def, callback)
             -- begin_sections and end_sections), and by here every item for the frame has been
             -- submitted, so NoOpenOverItems has the full hover picture to test against.
             ui.render_window_size_menu(ctx)
-        end)
-        if not body_ok then
-            ui.abort_sections()
-            -- The same broken frame repeats at frame rate, so only the first of a
-            -- run of identical errors is printed -- otherwise the log scrolls away
-            -- the very message it is reporting.
-            local message = tostring(body_err)
-            if message ~= last_render_error then
-                last_render_error = message
-                common.errorf('Config UI render error: %s', message)
-            end
-        else
-            last_render_error = nil
-        end
+        end, ui.abort_sections)
     end
     imgui.End()
     imgui.PopStyleVar()
