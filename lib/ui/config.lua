@@ -724,6 +724,10 @@ end
 function ui_config.show()
     ui_visible = true
     is_open[1] = true
+    -- Only a clean frame clears this, and a closed window renders none, so a fault
+    -- that outlives the close would be swallowed on the reopen -- a short window and
+    -- nothing in the log. Reopening is a fresh look at the problem; report it again.
+    last_render_error = nil
     -- A popup left open when the window last closed leaves stale was-open
     -- state that would arm a bg-alpha override on the reopen's first frame.
     ui.reset_opaque_tracking()

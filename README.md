@@ -65,7 +65,7 @@ The one exception is **opt-in leader following** (off by default): with **Follow
 - **Custom window size**: right-click empty space in the config window for *Use a custom window size*, then drag the corner; *Fit window to contents* puts it back on auto-sizing. — **Toranko**
 
 ### Fixed
-- **A UI error no longer takes the client down**: a fault while drawing the config window is now logged and the bad frame skipped, instead of crashing on an unbalanced ImGui stack.
+- **A config window error no longer takes the client down**: a fault while drawing it is now logged and that frame skipped, instead of crashing outright.
 - **Loading a profile no longer changes the window itself**: opacity, and whether the config window and the widget are open, are no longer saved into or applied by profiles.
 - **Erase clears everything the server says it can**: Stun, Addle, Requiem, Elegy, Enmity Down and Crit. Eva. Down are now erasable, are named in the per-status opt-out menus, and are cleared by the pet cleanses too. — **Atsumu**, **Tai**
 
