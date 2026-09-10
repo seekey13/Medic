@@ -19,6 +19,9 @@ local ui_visible = false
 local widget_visible = false  -- floating header-only window (/sk widget)
 local widget_open = { true }  -- Ashita's Begin drops the flags arg unless p_open is a table
 local force_expand = false  -- when true, next render un-collapses the window once
+-- Last error caught out of the config window body, so a fault that repeats every
+-- frame is logged once rather than at frame rate. Cleared by the first clean frame.
+local last_render_error = nil
 -- Upper bound on the widget's job line: 'Puppetmaster' is the longest job name
 -- in common.job_data, so both slots at 2-digit levels is wider than any real
 -- main/sub combo. Measured, not hardcoded in pixels, so it tracks the font.
@@ -980,187 +983,165 @@ function ui_config.render(settings, job_def, callback)
     imgui.PushStyleVar(ImGuiStyleVar_Alpha, (settings.ui_opacity or 100) / 100)
     if imgui.Begin(window_title, is_open, window_flags) then
 
-        -- Profile/job + Start/Stop rows move to the floating widget while it is open.
-        if not widget_visible then
-            render_header(ctx)
-        end
+        -- A Lua error anywhere in the body would escape with Begin still open --
+        -- and, in tab mode, BeginTabBar/BeginTabItem too -- which ImGui asserts on,
+        -- turning a recoverable Lua error into a hard client failure. Catch it the
+        -- way automation.execute_priority_actions tolerates a throwing action
+        -- module: unwind the tab chrome, log once, and let the End/PopStyleVar
+        -- below balance the rest. The frame renders short; the next one is normal.
+        local body_ok, body_err = pcall(function()
 
-        -- Tracked Targets list (show if any are being tracked)
-        local tracked_list = common.get_tracked_targets()
-        local has_tracked = next(tracked_list) ~= nil
-
-        if has_tracked then
-            local sorted_tt = {}
-            for sid, tt in pairs(tracked_list) do
-                table.insert(sorted_tt, { sid = sid, name = tt.name })
+            -- Profile/job + Start/Stop rows move to the floating widget while it is open.
+            if not widget_visible then
+                render_header(ctx)
             end
-            table.sort(sorted_tt, function(a, b) return a.name < b.name end)
-            local remove_sid = nil
-            local container_color = { 0.2, 0.2, 0.2, 1.0 }
-            for t_idx, tt in ipairs(sorted_tt) do
-                if t_idx > 1 then imgui.SameLine() end
 
-                -- Non-interactive visual button container showing T-index + name
-                imgui.PushStyleColor(ImGuiCol_Button, container_color)
-                imgui.PushStyleColor(ImGuiCol_ButtonHovered, container_color)
-                imgui.PushStyleColor(ImGuiCol_ButtonActive, container_color)
-                imgui.PushID('lbl_' .. tostring(tt.sid))
-                imgui.Button('T' .. t_idx .. ' ' .. tt.name)
-                imgui.PopID()
-                imgui.PopStyleColor(3)
+            -- Tracked Targets list (show if any are being tracked)
+            local tracked_list = common.get_tracked_targets()
+            local has_tracked = next(tracked_list) ~= nil
 
-                imgui.SameLine(0, 2)
-                imgui.PushID('rm_' .. tostring(tt.sid))
-                if imgui.Button('X') then
-                    remove_sid = tt.sid
+            if has_tracked then
+                local sorted_tt = {}
+                for sid, tt in pairs(tracked_list) do
+                    table.insert(sorted_tt, { sid = sid, name = tt.name })
                 end
-                imgui.PopID()
-            end
-            if remove_sid then
-                common.remove_tracked_target(remove_sid)
-                -- Clean up party_buffs entries for this tracked target
-                local tt_key = 'tt_' .. remove_sid
-                for key, targets in pairs(party_buffs) do
-                    if targets[tt_key] then
-                        targets[tt_key] = nil
+                table.sort(sorted_tt, function(a, b) return a.name < b.name end)
+                local remove_sid = nil
+                local container_color = { 0.2, 0.2, 0.2, 1.0 }
+                for t_idx, tt in ipairs(sorted_tt) do
+                    if t_idx > 1 then imgui.SameLine() end
+
+                    -- Non-interactive visual button container showing T-index + name
+                    imgui.PushStyleColor(ImGuiCol_Button, container_color)
+                    imgui.PushStyleColor(ImGuiCol_ButtonHovered, container_color)
+                    imgui.PushStyleColor(ImGuiCol_ButtonActive, container_color)
+                    imgui.PushID('lbl_' .. tostring(tt.sid))
+                    imgui.Button('T' .. t_idx .. ' ' .. tt.name)
+                    imgui.PopID()
+                    imgui.PopStyleColor(3)
+
+                    imgui.SameLine(0, 2)
+                    imgui.PushID('rm_' .. tostring(tt.sid))
+                    if imgui.Button('X') then
+                        remove_sid = tt.sid
                     end
+                    imgui.PopID()
                 end
-            end
-        end
-        
-        -- Attack Range (global). Shown only in Multisend Follow mode (native Follow hidden).
-        if settings.multisend_follow then
-            local attack_range_options = { 'Off', 'Melee (3 yalms)', 'Ranged (15 yalms)' }
-            local attack_range_current = settings.attack_range or 'Off'
-            local attack_range_index = { 0 }
-            
-            -- Find current index
-            for i, option in ipairs(attack_range_options) do
-                if option == attack_range_current then
-                    attack_range_index[1] = i - 1
-                    break
-                end
-            end
-            
-            ui.combo(ctx, 'Attack Range', 'attack_range', attack_range_index, attack_range_options, function(i)
-                return attack_range_options[i + 1]
-            end)
-            ui.item_tooltip(tooltips.attack_range)
-        end
-
-        -- Everything from here to end_sections is a "section": one enable checkbox
-        -- plus a body. They render as collapsing headers or as a tab bar depending
-        -- on settings.display_mode. Nothing but sections may be submitted between
-        -- these two calls -- in tab mode a stray widget would land inside the tab
-        -- bar, which ImGui does not allow.
-        ui.begin_sections(ctx)
-
-        -- Auto Follow (job-independent, top of window). Follow Target is shared with
-        -- Resting's distance check. Changing it resets autofollow. Hidden in Multisend mode.
-        if not settings.multisend_follow then
-            local follow_on_change = function()
-                common.reset_autofollow()
-                if callback then callback() end
-            end
-            local is_open, is_enabled = ui.begin_section(ctx, 'Auto Follow', 'follow_enabled', false, tooltips.follow)
-            if is_open and is_enabled then
-                imgui.Indent(ui.ABILITY_LIST_INDENT)
-                follow_target_name = render_party_dropdown('Follow Target', 'follow_target', false, party_member_names, settings, follow_on_change, true)
-                ui.item_tooltip(tooltips.follow_target)
-                ui.slider_int(ctx, 'Distance (yalms)##follow_distance', 'follow_distance', { settings.follow_distance or 5 }, 1, 15)
-                ui.item_tooltip(tooltips.follow_distance)
-                imgui.Unindent(ui.ABILITY_LIST_INDENT)
-            end
-            ui.end_section(ctx, is_open)
-        end
-
-        -- Pet Control: master `pet_enabled` header checkbox (same shape as every other
-        -- section) over two independent per-feature checkboxes -- send pet at target
-        -- (labelled PUP Deploy / SMN Assault / BST Fight, the job's own ability name --
-        -- "Deploy" is never used as the feature's name) and maneuver upkeep. Sits by
-        -- Auto Follow, the other section that moves something rather than supporting it.
-        -- Gated on the ability lists being present and usable (same pattern as "Pet
-        -- Debuff Removal" below), not on job_def.job_id -- that only ever reads the
-        -- *main* job's id and would hide maneuvers for a subjob PUP, which is supported.
-        local pet_control_list = job_def and job_def.abilities.pet_control
-        local maneuver_list = job_def and job_def.abilities.maneuver
-        local has_pet_control = pet_control_list and has_usable_abilities(pet_control_list)
-        local has_maneuver = maneuver_list and has_usable_abilities(maneuver_list)
-
-        if has_pet_control or has_maneuver then
-            local is_open, is_enabled = ui.begin_section(ctx, 'Pet Control', 'pet_enabled', true, tooltips.pet_control)
-            if is_open and is_enabled then
-                imgui.Indent(ui.ABILITY_LIST_INDENT)
-
-                -- Labelled with the job's own ability name (Deploy / Assault / Fight),
-                -- plus the target the pet gets sent at on the same row
-                if has_pet_control then
-                    ui.checkbox(ctx, pet_control_list[1].name, 'pet_control_enabled', { settings.pet_control_enabled or false })
-                    imgui.SameLine()
-                    ui.combo(ctx, '##pet_control_target', 'pet_control_target',
-                        { settings.pet_control_target == '<bt>' and 1 or 0 },
-                        { '<T>', '<BT>' },  -- display only; converter stores lowercase for the command
-                        function(i) return i == 1 and '<bt>' or '<t>' end, 70)
-                end
-
-                -- One checkbox plus three unlabelled slot dropdowns on the same row
-                if has_maneuver then
-                    local available_maneuvers = {}
-                    for _, ability in ipairs(maneuver_list) do
-                        if can_use_ability(ability) and not is_subjob_duplicate(job_def, ability) then
-                            table.insert(available_maneuvers, ability)
+                if remove_sid then
+                    common.remove_tracked_target(remove_sid)
+                    -- Clean up party_buffs entries for this tracked target
+                    local tt_key = 'tt_' .. remove_sid
+                    for key, targets in pairs(party_buffs) do
+                        if targets[tt_key] then
+                            targets[tt_key] = nil
                         end
                     end
-
-                    ui.checkbox(ctx, 'Maneuver', 'maneuver_enabled', { settings.maneuver_enabled ~= false })
-                    imgui.SameLine()
-                    render_ability_dropdown('##maneuver1', 'maneuver1_name', available_maneuvers, settings, callback, nil, 100)
-                    imgui.SameLine()
-                    render_ability_dropdown('##maneuver2', 'maneuver2_name', available_maneuvers, settings, callback, nil, 100)
-                    imgui.SameLine()
-                    render_ability_dropdown('##maneuver3', 'maneuver3_name', available_maneuvers, settings, callback, nil, 100)
                 end
-
-                imgui.Unindent(ui.ABILITY_LIST_INDENT)
             end
-            ui.end_section(ctx, is_open)
-        end
-
-        -- Show job-specific sections if we have a job definition
-        if job_def then
         
-        -- Focus Healing settings
-        if job_def and job_def.abilities.heal and has_usable_abilities(job_def.abilities.heal) then
-            local has_non_self_heal = false
-            for _, ability in ipairs(job_def.abilities.heal) do
-                if not ability.self_only then
-                    has_non_self_heal = true
-                    break
-                end
-            end
+            -- Attack Range (global). Shown only in Multisend Follow mode (native Follow hidden).
+            if settings.multisend_follow then
+                local attack_range_options = { 'Off', 'Melee (3 yalms)', 'Ranged (15 yalms)' }
+                local attack_range_current = settings.attack_range or 'Off'
+                local attack_range_index = { 0 }
             
-            if has_non_self_heal then
-                local is_open, is_enabled = ui.begin_section(ctx, 'Focus Healing', 'focus_enabled', false, tooltips.focus_healing)
+                -- Find current index
+                for i, option in ipairs(attack_range_options) do
+                    if option == attack_range_current then
+                        attack_range_index[1] = i - 1
+                        break
+                    end
+                end
+            
+                ui.combo(ctx, 'Attack Range', 'attack_range', attack_range_index, attack_range_options, function(i)
+                    return attack_range_options[i + 1]
+                end)
+                ui.item_tooltip(tooltips.attack_range)
+            end
+
+            -- Everything from here to end_sections is a "section": one enable checkbox
+            -- plus a body. They render as collapsing headers or as a tab bar depending
+            -- on settings.display_mode. Nothing but sections may be submitted between
+            -- these two calls -- in tab mode a stray widget would land inside the tab
+            -- bar, which ImGui does not allow.
+            ui.begin_sections(ctx)
+
+            -- Auto Follow (job-independent, top of window). Follow Target is shared with
+            -- Resting's distance check. Changing it resets autofollow. Hidden in Multisend mode.
+            if not settings.multisend_follow then
+                local follow_on_change = function()
+                    common.reset_autofollow()
+                    if callback then callback() end
+                end
+                local is_open, is_enabled = ui.begin_section(ctx, 'Auto Follow', 'follow_enabled', false, tooltips.follow)
                 if is_open and is_enabled then
                     imgui.Indent(ui.ABILITY_LIST_INDENT)
-                    -- Focus Target dropdown
-                    focus_target_name = render_party_dropdown('Focus Target', 'focus_target', true, party_member_names, settings, callback, true)
-                    
-                    ui.slider_int(ctx, 'Focus (HP%)', 'focus_threshold', { settings.focus_threshold or 85 }, 1, 100)
+                    follow_target_name = render_party_dropdown('Follow Target', 'follow_target', false, party_member_names, settings, follow_on_change, true)
+                    ui.item_tooltip(tooltips.follow_target)
+                    ui.slider_int(ctx, 'Distance (yalms)##follow_distance', 'follow_distance', { settings.follow_distance or 5 }, 1, 15)
+                    ui.item_tooltip(tooltips.follow_distance)
                     imgui.Unindent(ui.ABILITY_LIST_INDENT)
                 end
                 ui.end_section(ctx, is_open)
             end
-        end
+
+            -- Pet Control: master `pet_enabled` header checkbox (same shape as every other
+            -- section) over two independent per-feature checkboxes -- send pet at target
+            -- (labelled PUP Deploy / SMN Assault / BST Fight, the job's own ability name --
+            -- "Deploy" is never used as the feature's name) and maneuver upkeep. Sits by
+            -- Auto Follow, the other section that moves something rather than supporting it.
+            -- Gated on the ability lists being present and usable (same pattern as "Pet
+            -- Debuff Removal" below), not on job_def.job_id -- that only ever reads the
+            -- *main* job's id and would hide maneuvers for a subjob PUP, which is supported.
+            local pet_control_list = job_def and job_def.abilities.pet_control
+            local maneuver_list = job_def and job_def.abilities.maneuver
+            local has_pet_control = pet_control_list and has_usable_abilities(pet_control_list)
+            local has_maneuver = maneuver_list and has_usable_abilities(maneuver_list)
+
+            if has_pet_control or has_maneuver then
+                local is_open, is_enabled = ui.begin_section(ctx, 'Pet Control', 'pet_enabled', true, tooltips.pet_control)
+                if is_open and is_enabled then
+                    imgui.Indent(ui.ABILITY_LIST_INDENT)
+
+                    -- Labelled with the job's own ability name (Deploy / Assault / Fight),
+                    -- plus the target the pet gets sent at on the same row
+                    if has_pet_control then
+                        ui.checkbox(ctx, pet_control_list[1].name, 'pet_control_enabled', { settings.pet_control_enabled or false })
+                        imgui.SameLine()
+                        ui.combo(ctx, '##pet_control_target', 'pet_control_target',
+                            { settings.pet_control_target == '<bt>' and 1 or 0 },
+                            { '<T>', '<BT>' },  -- display only; converter stores lowercase for the command
+                            function(i) return i == 1 and '<bt>' or '<t>' end, 70)
+                    end
+
+                    -- One checkbox plus three unlabelled slot dropdowns on the same row
+                    if has_maneuver then
+                        local available_maneuvers = {}
+                        for _, ability in ipairs(maneuver_list) do
+                            if can_use_ability(ability) and not is_subjob_duplicate(job_def, ability) then
+                                table.insert(available_maneuvers, ability)
+                            end
+                        end
+
+                        ui.checkbox(ctx, 'Maneuver', 'maneuver_enabled', { settings.maneuver_enabled ~= false })
+                        imgui.SameLine()
+                        render_ability_dropdown('##maneuver1', 'maneuver1_name', available_maneuvers, settings, callback, nil, 100)
+                        imgui.SameLine()
+                        render_ability_dropdown('##maneuver2', 'maneuver2_name', available_maneuvers, settings, callback, nil, 100)
+                        imgui.SameLine()
+                        render_ability_dropdown('##maneuver3', 'maneuver3_name', available_maneuvers, settings, callback, nil, 100)
+                    end
+
+                    imgui.Unindent(ui.ABILITY_LIST_INDENT)
+                end
+                ui.end_section(ctx, is_open)
+            end
+
+            -- Show job-specific sections if we have a job definition
+            if job_def then
         
-        -- Group Healing settings
-        if job_def and job_def.abilities.heal and has_usable_abilities(job_def.abilities.heal) then
-            local is_open, is_enabled = ui.begin_section(ctx, 'Group Healing', 'heal_enabled', false, tooltips.group_healing)
-            if is_open and is_enabled then
-                imgui.Indent(ui.ABILITY_LIST_INDENT)
-                ui.slider_int(ctx, 'Group (HP%)', 'heal_threshold', { settings.heal_threshold or 75 }, 1, 100)
-                -- Group Targets buttons only make sense when a heal can target others;
-                -- hide them for self-only heal sets (mirrors Focus Healing gate above).
+            -- Focus Healing settings
+            if job_def and job_def.abilities.heal and has_usable_abilities(job_def.abilities.heal) then
                 local has_non_self_heal = false
                 for _, ability in ipairs(job_def.abilities.heal) do
                     if not ability.self_only then
@@ -1168,526 +1149,570 @@ function ui_config.render(settings, job_def, callback)
                         break
                     end
                 end
+            
                 if has_non_self_heal then
-                    ui.render_heal_group_selection(ctx, 'heal_group', true)
+                    local is_open, is_enabled = ui.begin_section(ctx, 'Focus Healing', 'focus_enabled', false, tooltips.focus_healing)
+                    if is_open and is_enabled then
+                        imgui.Indent(ui.ABILITY_LIST_INDENT)
+                        -- Focus Target dropdown
+                        focus_target_name = render_party_dropdown('Focus Target', 'focus_target', true, party_member_names, settings, callback, true)
+                    
+                        ui.slider_int(ctx, 'Focus (HP%)', 'focus_threshold', { settings.focus_threshold or 85 }, 1, 100)
+                        imgui.Unindent(ui.ABILITY_LIST_INDENT)
+                    end
+                    ui.end_section(ctx, is_open)
+                end
+            end
+        
+            -- Group Healing settings
+            if job_def and job_def.abilities.heal and has_usable_abilities(job_def.abilities.heal) then
+                local is_open, is_enabled = ui.begin_section(ctx, 'Group Healing', 'heal_enabled', false, tooltips.group_healing)
+                if is_open and is_enabled then
+                    imgui.Indent(ui.ABILITY_LIST_INDENT)
+                    ui.slider_int(ctx, 'Group (HP%)', 'heal_threshold', { settings.heal_threshold or 75 }, 1, 100)
+                    -- Group Targets buttons only make sense when a heal can target others;
+                    -- hide them for self-only heal sets (mirrors Focus Healing gate above).
+                    local has_non_self_heal = false
+                    for _, ability in ipairs(job_def.abilities.heal) do
+                        if not ability.self_only then
+                            has_non_self_heal = true
+                            break
+                        end
+                    end
+                    if has_non_self_heal then
+                        ui.render_heal_group_selection(ctx, 'heal_group', true)
+                        imgui.SameLine()
+                        imgui.Text('Group Targets')
+                    end
+                    for _, ability in ipairs(job_def.abilities.heal) do
+                        if can_use_ability(ability) and not is_subjob_duplicate(job_def, ability) then
+                            ui.ability_checkbox(ctx, ability, job_def, 'heal', true)
+                        end
+                    end
+                
+                    -- Critical HP section (inside Group Healing)
+                    if job_def.abilities.critical and has_usable_abilities(job_def.abilities.critical) then
+                        ui.slider_int(ctx, 'Critical (HP%)', 'critical_threshold', { settings.critical_threshold or 30 }, 1, 50)
+                        ui.item_tooltip(tooltips.critical_hp)
+                        for _, ability in ipairs(job_def.abilities.critical) do
+                            if can_use_ability(ability) and not is_subjob_duplicate(job_def, ability) then
+                                ui.ability_checkbox(ctx, ability, job_def, 'critical')
+                            end
+                        end
+                    end
+                    imgui.Unindent(ui.ABILITY_LIST_INDENT)
+                end
+                ui.end_section(ctx, is_open)
+            end
+        
+            -- AOE Healing settings
+            if job_def and job_def.abilities.heal_aoe and has_usable_abilities(job_def.abilities.heal_aoe) then
+                local is_open, is_enabled = ui.begin_section(ctx, 'AOE Healing', 'heal_aoe_enabled', false, tooltips.aoe_healing)
+                if is_open and is_enabled then
+                    imgui.Indent(ui.ABILITY_LIST_INDENT)
+                    ui.slider_int(ctx, 'AOE (HP%)', 'heal_aoe_threshold', { settings.heal_aoe_threshold or 70 }, 1, 100)
+                    ui.render_heal_group_selection(ctx, 'heal_aoe_group', false)
                     imgui.SameLine()
-                    imgui.Text('Group Targets')
+                    imgui.Text('AOE Targets')
+
+                    for _, ability in ipairs(job_def.abilities.heal_aoe) do
+                        if can_use_ability(ability) and not is_subjob_duplicate(job_def, ability) then
+                            ui.ability_checkbox(ctx, ability, job_def, 'heal_aoe', true)
+                        end
+                    end
+                    imgui.Unindent(ui.ABILITY_LIST_INDENT)
                 end
+                ui.end_section(ctx, is_open)
+            end
+        
+            -- Pet Healing settings
+            if job_def and job_def.abilities.heal_pet and has_usable_abilities(job_def.abilities.heal_pet) then
+                local is_open, is_enabled = ui.begin_section(ctx, 'Pet Healing', 'heal_pet_enabled', false, tooltips.pet_healing)
+                if is_open and is_enabled then
+                    imgui.Indent(ui.ABILITY_LIST_INDENT)
+                    ui.slider_int(ctx, 'Pet (HP%)', 'heal_pet_threshold', { settings.heal_pet_threshold or 50 }, 1, 100)
+                
+                    for _, ability in ipairs(job_def.abilities.heal_pet) do
+                        if can_use_ability(ability) and not is_subjob_duplicate(job_def, ability) then
+                            ui.ability_checkbox(ctx, ability, job_def, 'heal_pet')
+                            render_ammo_count(ability, true)
+                        end
+                    end
+
+                    imgui.Unindent(ui.ABILITY_LIST_INDENT)
+                end
+                ui.end_section(ctx, is_open)
+            end
+
+            -- Wake detection (used by the Sleep Removal section below)
+            local has_wake_abilities = false
+            local has_outside_wake = false
+            if job_def and job_def.abilities.heal then
                 for _, ability in ipairs(job_def.abilities.heal) do
-                    if can_use_ability(ability) and not is_subjob_duplicate(job_def, ability) then
-                        ui.ability_checkbox(ctx, ability, job_def, 'heal', true)
-                    end
-                end
-                
-                -- Critical HP section (inside Group Healing)
-                if job_def.abilities.critical and has_usable_abilities(job_def.abilities.critical) then
-                    ui.slider_int(ctx, 'Critical (HP%)', 'critical_threshold', { settings.critical_threshold or 30 }, 1, 50)
-                    ui.item_tooltip(tooltips.critical_hp)
-                    for _, ability in ipairs(job_def.abilities.critical) do
-                        if can_use_ability(ability) and not is_subjob_duplicate(job_def, ability) then
-                            ui.ability_checkbox(ctx, ability, job_def, 'critical')
+                    if ability.wakes and can_use_ability(ability) then
+                        has_wake_abilities = true
+                        if ability.target_outside then
+                            has_outside_wake = true
+                            break
                         end
                     end
                 end
-                imgui.Unindent(ui.ABILITY_LIST_INDENT)
             end
-            ui.end_section(ctx, is_open)
-        end
-        
-        -- AOE Healing settings
-        if job_def and job_def.abilities.heal_aoe and has_usable_abilities(job_def.abilities.heal_aoe) then
-            local is_open, is_enabled = ui.begin_section(ctx, 'AOE Healing', 'heal_aoe_enabled', false, tooltips.aoe_healing)
-            if is_open and is_enabled then
-                imgui.Indent(ui.ABILITY_LIST_INDENT)
-                ui.slider_int(ctx, 'AOE (HP%)', 'heal_aoe_threshold', { settings.heal_aoe_threshold or 70 }, 1, 100)
-                ui.render_heal_group_selection(ctx, 'heal_aoe_group', false)
-                imgui.SameLine()
-                imgui.Text('AOE Targets')
 
-                for _, ability in ipairs(job_def.abilities.heal_aoe) do
-                    if can_use_ability(ability) and not is_subjob_duplicate(job_def, ability) then
-                        ui.ability_checkbox(ctx, ability, job_def, 'heal_aoe', true)
-                    end
+            -- Sleep removal settings. Hidden while solo -- you cannot cure your own
+            -- Sleep, so with no P1..P5 to scan the whole section is dead UI.
+            if has_wake_abilities and common.get_party_size() > 1 then
+                local is_open_wake, is_enabled_wake = ui.begin_section(ctx, 'Sleep Removal', 'wake_enabled', false, tooltips.sleep_removal)
+                if is_open_wake and is_enabled_wake then
+                    -- Party selection buttons (who gets sleep removal)
+                    -- exclude ME since player cannot wake themselves from sleep
+                    imgui.Indent(ui.ABILITY_LIST_INDENT)
+                    ui.render_party_selection(ctx, 'wake', has_outside_wake, false)
+                    imgui.SameLine()
+                    imgui.Text('Sleep Targets')
+                    imgui.Unindent(ui.ABILITY_LIST_INDENT)
                 end
-                imgui.Unindent(ui.ABILITY_LIST_INDENT)
+                ui.end_section(ctx, is_open_wake)
             end
-            ui.end_section(ctx, is_open)
-        end
-        
-        -- Pet Healing settings
-        if job_def and job_def.abilities.heal_pet and has_usable_abilities(job_def.abilities.heal_pet) then
-            local is_open, is_enabled = ui.begin_section(ctx, 'Pet Healing', 'heal_pet_enabled', false, tooltips.pet_healing)
-            if is_open and is_enabled then
-                imgui.Indent(ui.ABILITY_LIST_INDENT)
-                ui.slider_int(ctx, 'Pet (HP%)', 'heal_pet_threshold', { settings.heal_pet_threshold or 50 }, 1, 100)
-                
-                for _, ability in ipairs(job_def.abilities.heal_pet) do
-                    if can_use_ability(ability) and not is_subjob_duplicate(job_def, ability) then
-                        ui.ability_checkbox(ctx, ability, job_def, 'heal_pet')
-                        render_ammo_count(ability, true)
-                    end
-                end
 
-                imgui.Unindent(ui.ABILITY_LIST_INDENT)
-            end
-            ui.end_section(ctx, is_open)
-        end
-
-        -- Wake detection (used by the Sleep Removal section below)
-        local has_wake_abilities = false
-        local has_outside_wake = false
-        if job_def and job_def.abilities.heal then
-            for _, ability in ipairs(job_def.abilities.heal) do
-                if ability.wakes and can_use_ability(ability) then
-                    has_wake_abilities = true
-                    if ability.target_outside then
-                        has_outside_wake = true
-                        break
-                    end
-                end
-            end
-        end
-
-        -- Sleep removal settings. Hidden while solo -- you cannot cure your own
-        -- Sleep, so with no P1..P5 to scan the whole section is dead UI.
-        if has_wake_abilities and common.get_party_size() > 1 then
-            local is_open_wake, is_enabled_wake = ui.begin_section(ctx, 'Sleep Removal', 'wake_enabled', false, tooltips.sleep_removal)
-            if is_open_wake and is_enabled_wake then
-                -- Party selection buttons (who gets sleep removal)
-                -- exclude ME since player cannot wake themselves from sleep
-                imgui.Indent(ui.ABILITY_LIST_INDENT)
-                ui.render_party_selection(ctx, 'wake', has_outside_wake, false)
-                imgui.SameLine()
-                imgui.Text('Sleep Targets')
-                imgui.Unindent(ui.ABILITY_LIST_INDENT)
-            end
-            ui.end_section(ctx, is_open_wake)
-        end
-
-        -- Debuff removal settings
-        if job_def and job_def.abilities.debuff_removal and has_usable_abilities(job_def.abilities.debuff_removal) then
-            local is_open, is_enabled = ui.begin_section(ctx, 'Debuff Removal', 'debuff_removal_enabled', false, tooltips.debuff_removal)
-            if is_open and is_enabled then
-                -- Clear temporary group rendering flags
-                if current_settings then
-                    for key in pairs(current_settings) do
-                        if key:match('^rendered_group_') then
-                            current_settings[key] = nil
-                        end
-                    end
-                end
-
-                imgui.Indent(ui.ABILITY_LIST_INDENT)
-                ctx.show_trust_warning = true
-                for _, ability in ipairs(job_def.abilities.debuff_removal) do
-                    if can_use_ability(ability) and not is_subjob_duplicate(job_def, ability) then
-                        ui.render_ability(ctx, ability, job_def, 'debuff_removal')
-                    end
-                end
-                ctx.show_trust_warning = false
-                imgui.Unindent(ui.ABILITY_LIST_INDENT)
-            end
-            ui.end_section(ctx, is_open)
-        end
-
-        -- Pet Debuff Removal settings (BST Reward+Roborant, PUP Maintenance+Oil).
-        -- Pet statuses are inferred from packets (the client has no pet buff
-        -- memory), so warn it's not fully reliable -- same caveat as Trust/tracked.
-        if job_def and job_def.abilities.pet_debuff_removal and has_usable_abilities(job_def.abilities.pet_debuff_removal) then
-            local is_open, is_enabled = ui.begin_section(ctx, 'Pet Debuff Removal', 'pet_debuff_removal_enabled', false, tooltips.pet_debuff_removal)
-            if is_open and is_enabled then
-                imgui.Indent(ui.ABILITY_LIST_INDENT)
-                ctx.show_pet_debuff_warning = true
-                for _, ability in ipairs(job_def.abilities.pet_debuff_removal) do
-                    if can_use_ability(ability) and not is_subjob_duplicate(job_def, ability) then
-                        ui.ability_checkbox(ctx, ability, job_def, 'pet_debuff_removal')
-                        render_ammo_count(ability)
-                    end
-                end
-                ctx.show_pet_debuff_warning = false
-                imgui.Unindent(ui.ABILITY_LIST_INDENT)
-            end
-            ui.end_section(ctx, is_open)
-        end
-
-        -- Item-based status removal (consumables) -- hidden until inventory loads
-        -- (counts read as "?"); shown once readable, even if every count is 0.
-        if ui.item_inventory_loaded() then
-            local is_open_item, is_enabled_item = ui.begin_section(ctx, 'Item Debuff Removal', 'item_removal_enabled', false, tooltips.item_removal)
-            if is_open_item and is_enabled_item then
-                imgui.Indent(ui.ABILITY_LIST_INDENT)
-                ui.item_removal_checkboxes(ctx)
-                imgui.Unindent(ui.ABILITY_LIST_INDENT)
-            end
-            ui.end_section(ctx, is_open_item)
-        end
-
-        -- Resting (MP jobs). Distance watches the Auto Follow section's Follow Target.
-        if job_def and job_def.resource_type == 'mp' then
-            local is_open, is_enabled = ui.begin_section(ctx, 'Resting', 'rest_enabled', false, tooltips.resting)
-            if is_open and is_enabled then
-                imgui.Indent(ui.ABILITY_LIST_INDENT)
-                ui.slider_int(ctx, 'Timer (seconds)', 'rest_timer', { settings.rest_timer or 5 }, 1, 20)
-                ui.item_tooltip(tooltips.rest_timer)
-
-                ui.slider_int(ctx, 'Distance (yalms)##rest_distance', 'rest_distance', { settings.rest_distance or 7 }, 1, 15)
-                ui.item_tooltip(tooltips.rest_distance)
-                imgui.Unindent(ui.ABILITY_LIST_INDENT)
-            end
-            ui.end_section(ctx, is_open)
-        end
-        
-        -- Recovery settings
-        local has_mp_recovery = job_def and job_def.abilities.recover_mp and has_usable_abilities(job_def.abilities.recover_mp)
-        local has_tp_recovery = job_def and job_def.abilities.recover_tp and has_usable_abilities(job_def.abilities.recover_tp)
-        local has_party_mp_recovery = job_def and job_def.abilities.recover_party_mp and has_usable_abilities(job_def.abilities.recover_party_mp)
-        
-        if has_mp_recovery or has_tp_recovery or has_party_mp_recovery then
-            local is_open, is_enabled = ui.begin_section(ctx, 'Resource Recovery', 'recover_enabled', false, tooltips.resource_recovery)
-            if is_open and is_enabled then
-                imgui.Indent(ui.ABILITY_LIST_INDENT)
-                -- Self Recover (TP%) section
-                if has_tp_recovery then
-                    ui.slider_int(ctx, 'Self Recover (TP)', 'recover_tp_threshold', { settings.recover_tp_threshold or 500 }, 100, 3000)
-                    for _, ability in ipairs(job_def.abilities.recover_tp) do
-                        if can_use_ability(ability) and not is_subjob_duplicate(job_def, ability) then
-                            ui.ability_checkbox(ctx, ability, job_def, 'recover_tp')
-                        end
-                    end
-                    
-                    if has_mp_recovery or has_party_mp_recovery then
-                        imgui.Spacing()
-                    end
-                end
-                
-                -- Self Recover (MP%) section
-                if has_mp_recovery then
-                    ui.slider_int(ctx, 'Self Recover (MP%)', 'recover_mp_threshold', { settings.recover_mp_threshold or 30 }, 1, 100)
-                    local chivalry_visible = false
-                    for _, ability in ipairs(job_def.abilities.recover_mp) do
-                        if can_use_ability(ability) and not is_subjob_duplicate(job_def, ability) then
-                            ui.ability_checkbox(ctx, ability, job_def, 'recover_mp')
-                            if ability.min_tp ~= nil then
-                                chivalry_visible = true
+            -- Debuff removal settings
+            if job_def and job_def.abilities.debuff_removal and has_usable_abilities(job_def.abilities.debuff_removal) then
+                local is_open, is_enabled = ui.begin_section(ctx, 'Debuff Removal', 'debuff_removal_enabled', false, tooltips.debuff_removal)
+                if is_open and is_enabled then
+                    -- Clear temporary group rendering flags
+                    if current_settings then
+                        for key in pairs(current_settings) do
+                            if key:match('^rendered_group_') then
+                                current_settings[key] = nil
                             end
                         end
                     end
-                    if chivalry_visible then
-                        ui.slider_int(ctx, 'Chivalry Min TP', 'chivalry_min_tp', { settings.chivalry_min_tp or 3000 }, 0, 3000)
-                    end
 
+                    imgui.Indent(ui.ABILITY_LIST_INDENT)
+                    ctx.show_trust_warning = true
+                    for _, ability in ipairs(job_def.abilities.debuff_removal) do
+                        if can_use_ability(ability) and not is_subjob_duplicate(job_def, ability) then
+                            ui.render_ability(ctx, ability, job_def, 'debuff_removal')
+                        end
+                    end
+                    ctx.show_trust_warning = false
+                    imgui.Unindent(ui.ABILITY_LIST_INDENT)
+                end
+                ui.end_section(ctx, is_open)
+            end
+
+            -- Pet Debuff Removal settings (BST Reward+Roborant, PUP Maintenance+Oil).
+            -- Pet statuses are inferred from packets (the client has no pet buff
+            -- memory), so warn it's not fully reliable -- same caveat as Trust/tracked.
+            if job_def and job_def.abilities.pet_debuff_removal and has_usable_abilities(job_def.abilities.pet_debuff_removal) then
+                local is_open, is_enabled = ui.begin_section(ctx, 'Pet Debuff Removal', 'pet_debuff_removal_enabled', false, tooltips.pet_debuff_removal)
+                if is_open and is_enabled then
+                    imgui.Indent(ui.ABILITY_LIST_INDENT)
+                    ctx.show_pet_debuff_warning = true
+                    for _, ability in ipairs(job_def.abilities.pet_debuff_removal) do
+                        if can_use_ability(ability) and not is_subjob_duplicate(job_def, ability) then
+                            ui.ability_checkbox(ctx, ability, job_def, 'pet_debuff_removal')
+                            render_ammo_count(ability)
+                        end
+                    end
+                    ctx.show_pet_debuff_warning = false
+                    imgui.Unindent(ui.ABILITY_LIST_INDENT)
+                end
+                ui.end_section(ctx, is_open)
+            end
+
+            -- Item-based status removal (consumables) -- hidden until inventory loads
+            -- (counts read as "?"); shown once readable, even if every count is 0.
+            if ui.item_inventory_loaded() then
+                local is_open_item, is_enabled_item = ui.begin_section(ctx, 'Item Debuff Removal', 'item_removal_enabled', false, tooltips.item_removal)
+                if is_open_item and is_enabled_item then
+                    imgui.Indent(ui.ABILITY_LIST_INDENT)
+                    ui.item_removal_checkboxes(ctx)
+                    imgui.Unindent(ui.ABILITY_LIST_INDENT)
+                end
+                ui.end_section(ctx, is_open_item)
+            end
+
+            -- Resting (MP jobs). Distance watches the Auto Follow section's Follow Target.
+            if job_def and job_def.resource_type == 'mp' then
+                local is_open, is_enabled = ui.begin_section(ctx, 'Resting', 'rest_enabled', false, tooltips.resting)
+                if is_open and is_enabled then
+                    imgui.Indent(ui.ABILITY_LIST_INDENT)
+                    ui.slider_int(ctx, 'Timer (seconds)', 'rest_timer', { settings.rest_timer or 5 }, 1, 20)
+                    ui.item_tooltip(tooltips.rest_timer)
+
+                    ui.slider_int(ctx, 'Distance (yalms)##rest_distance', 'rest_distance', { settings.rest_distance or 7 }, 1, 15)
+                    ui.item_tooltip(tooltips.rest_distance)
+                    imgui.Unindent(ui.ABILITY_LIST_INDENT)
+                end
+                ui.end_section(ctx, is_open)
+            end
+        
+            -- Recovery settings
+            local has_mp_recovery = job_def and job_def.abilities.recover_mp and has_usable_abilities(job_def.abilities.recover_mp)
+            local has_tp_recovery = job_def and job_def.abilities.recover_tp and has_usable_abilities(job_def.abilities.recover_tp)
+            local has_party_mp_recovery = job_def and job_def.abilities.recover_party_mp and has_usable_abilities(job_def.abilities.recover_party_mp)
+        
+            if has_mp_recovery or has_tp_recovery or has_party_mp_recovery then
+                local is_open, is_enabled = ui.begin_section(ctx, 'Resource Recovery', 'recover_enabled', false, tooltips.resource_recovery)
+                if is_open and is_enabled then
+                    imgui.Indent(ui.ABILITY_LIST_INDENT)
+                    -- Self Recover (TP%) section
+                    if has_tp_recovery then
+                        ui.slider_int(ctx, 'Self Recover (TP)', 'recover_tp_threshold', { settings.recover_tp_threshold or 500 }, 100, 3000)
+                        for _, ability in ipairs(job_def.abilities.recover_tp) do
+                            if can_use_ability(ability) and not is_subjob_duplicate(job_def, ability) then
+                                ui.ability_checkbox(ctx, ability, job_def, 'recover_tp')
+                            end
+                        end
+                    
+                        if has_mp_recovery or has_party_mp_recovery then
+                            imgui.Spacing()
+                        end
+                    end
+                
+                    -- Self Recover (MP%) section
+                    if has_mp_recovery then
+                        ui.slider_int(ctx, 'Self Recover (MP%)', 'recover_mp_threshold', { settings.recover_mp_threshold or 30 }, 1, 100)
+                        local chivalry_visible = false
+                        for _, ability in ipairs(job_def.abilities.recover_mp) do
+                            if can_use_ability(ability) and not is_subjob_duplicate(job_def, ability) then
+                                ui.ability_checkbox(ctx, ability, job_def, 'recover_mp')
+                                if ability.min_tp ~= nil then
+                                    chivalry_visible = true
+                                end
+                            end
+                        end
+                        if chivalry_visible then
+                            ui.slider_int(ctx, 'Chivalry Min TP', 'chivalry_min_tp', { settings.chivalry_min_tp or 3000 }, 0, 3000)
+                        end
+
+                        if has_party_mp_recovery then
+                            imgui.Spacing()
+                        end
+                    end
+                
+                    -- Party MP recovery section (for Devotion)
                     if has_party_mp_recovery then
-                        imgui.Spacing()
-                    end
-                end
-                
-                -- Party MP recovery section (for Devotion)
-                if has_party_mp_recovery then
-                    -- Recovery Target dropdown
-                    -- Party-only: Devotion resolves by P1-P5 index in recover.lua, so
-                    -- tracked/alliance targets would never match. Don't offer them.
-                    focus_recovery_target_name = render_party_dropdown('Recovery Target', 'focus_recovery_target', false, party_member_names, settings, callback, false)
+                        -- Recovery Target dropdown
+                        -- Party-only: Devotion resolves by P1-P5 index in recover.lua, so
+                        -- tracked/alliance targets would never match. Don't offer them.
+                        focus_recovery_target_name = render_party_dropdown('Recovery Target', 'focus_recovery_target', false, party_member_names, settings, callback, false)
                     
-                    if focus_recovery_target_name then
-                        ui.slider_int(ctx, 'Target Recover (MP%)', 'focus_recovery_threshold', { settings.focus_recovery_threshold or 30 }, 1, 100)
-                    end
+                        if focus_recovery_target_name then
+                            ui.slider_int(ctx, 'Target Recover (MP%)', 'focus_recovery_threshold', { settings.focus_recovery_threshold or 30 }, 1, 100)
+                        end
                     
-                    for _, ability in ipairs(job_def.abilities.recover_party_mp) do
-                        if can_use_ability(ability) and not is_subjob_duplicate(job_def, ability) then
-                            ui.ability_checkbox(ctx, ability, job_def, 'recover_party_mp')
+                        for _, ability in ipairs(job_def.abilities.recover_party_mp) do
+                            if can_use_ability(ability) and not is_subjob_duplicate(job_def, ability) then
+                                ui.ability_checkbox(ctx, ability, job_def, 'recover_party_mp')
+                            end
                         end
                     end
+                    imgui.Unindent(ui.ABILITY_LIST_INDENT)
                 end
-                imgui.Unindent(ui.ABILITY_LIST_INDENT)
+                ui.end_section(ctx, is_open)
             end
-            ui.end_section(ctx, is_open)
-        end
         
-        -- Roll settings (Corsair): pick two rolls and the total to stop doubling at
-        if job_def and job_def.abilities.roll and has_usable_abilities(job_def.abilities.roll) then
-            local is_open, is_enabled = ui.begin_section(ctx, 'Rolls', 'roll_enabled', true, tooltips.rolls)
-            if is_open and is_enabled then
-                imgui.Indent(ui.ABILITY_LIST_INDENT)
+            -- Roll settings (Corsair): pick two rolls and the total to stop doubling at
+            if job_def and job_def.abilities.roll and has_usable_abilities(job_def.abilities.roll) then
+                local is_open, is_enabled = ui.begin_section(ctx, 'Rolls', 'roll_enabled', true, tooltips.rolls)
+                if is_open and is_enabled then
+                    imgui.Indent(ui.ABILITY_LIST_INDENT)
 
-                -- Rolls are unlocked individually, not purely by level, so the level
-                -- check in can_use_ability isn't enough -- has_spell_learned reads the
-                -- client's own ability list (HasAbility) and drops rolls you don't know.
-                local available_rolls = {}
-                for _, ability in ipairs(job_def.abilities.roll) do
-                    if can_use_ability(ability) and common.has_spell_learned(ability)
-                        and not is_subjob_duplicate(job_def, ability) then
-                        table.insert(available_rolls, ability)
-                    end
-                end
-
-                render_ability_dropdown('Roll 1', 'roll1_name', available_rolls, settings, callback, tooltips.roll_slot, nil, roll.reset_state)
-
-                -- Corsair as a subjob can only keep one roll up, so slot 2 is hidden
-                -- and force-cleared. roll.lua enforces the same rule independently.
-                local cor_is_sub = job_def.abilities.roll[1] and job_def.abilities.roll[1].is_main_job == false
-                if cor_is_sub then
-                    if settings.roll2_name then
-                        settings.roll2_name = nil
-                        roll.reset_state()
-                        callback()
-                    end
-                else
-                    render_ability_dropdown('Roll 2', 'roll2_name', available_rolls, settings, callback, tooltips.roll_slot, nil, roll.reset_state)
-                end
-
-                -- Risk tier drives the whole Double-Up / Snake Eye / Fold decision
-                -- (lib/core/roll_strategy.lua). Labels are display-only; the setting
-                -- stores the lowercase key.
-                local tier_labels = { 'Lowest', 'Medium', 'Highest' }
-                local tier_values = { 'lowest', 'medium', 'highest' }
-                local tier_index  = { 1 }  -- default Medium
-                for i, value in ipairs(tier_values) do
-                    if value == (settings.risk_tier or 'medium') then
-                        tier_index[1] = i - 1
-                        break
-                    end
-                end
-                ui.combo(ctx, 'Risk Tier##risk_tier', 'risk_tier', tier_index, tier_labels, function(i)
-                    return tier_values[i + 1]
-                end)
-                ui.item_tooltip(tooltips.risk_tier)
-
-                imgui.Unindent(ui.ABILITY_LIST_INDENT)
-            end
-            ui.end_section(ctx, is_open)
-        end
-
-        -- Buff settings. Rune Fencer's four rune rows ride at the top of this
-        -- section, so it also opens for a job that has runes but no usable buff
-        -- (a RUN main below Barstone, or a low RUN subjob).
-        local rune_list = job_def and job_def.abilities.rune
-        local has_runes = rune_list and has_usable_abilities(rune_list)
-        local has_buffs = job_def and job_def.abilities.buff and has_usable_abilities(job_def.abilities.buff)
-        if has_buffs or has_runes then
-            local is_open, is_enabled = ui.begin_section(ctx, 'Buffs', 'buff_enabled', false, tooltips.buffs)
-            if is_open and is_enabled then
-                -- Clear temporary group rendering flags
-                if current_settings then
-                    for key in pairs(current_settings) do
-                        if key:match('^rendered_group_') then
-                            current_settings[key] = nil
+                    -- Rolls are unlocked individually, not purely by level, so the level
+                    -- check in can_use_ability isn't enough -- has_spell_learned reads the
+                    -- client's own ability list (HasAbility) and drops rolls you don't know.
+                    local available_rolls = {}
+                    for _, ability in ipairs(job_def.abilities.roll) do
+                        if can_use_ability(ability) and common.has_spell_learned(ability)
+                            and not is_subjob_duplicate(job_def, ability) then
+                            table.insert(available_rolls, ability)
                         end
                     end
+
+                    render_ability_dropdown('Roll 1', 'roll1_name', available_rolls, settings, callback, tooltips.roll_slot, nil, roll.reset_state)
+
+                    -- Corsair as a subjob can only keep one roll up, so slot 2 is hidden
+                    -- and force-cleared. roll.lua enforces the same rule independently.
+                    local cor_is_sub = job_def.abilities.roll[1] and job_def.abilities.roll[1].is_main_job == false
+                    if cor_is_sub then
+                        if settings.roll2_name then
+                            settings.roll2_name = nil
+                            roll.reset_state()
+                            callback()
+                        end
+                    else
+                        render_ability_dropdown('Roll 2', 'roll2_name', available_rolls, settings, callback, tooltips.roll_slot, nil, roll.reset_state)
+                    end
+
+                    -- Risk tier drives the whole Double-Up / Snake Eye / Fold decision
+                    -- (lib/core/roll_strategy.lua). Labels are display-only; the setting
+                    -- stores the lowercase key.
+                    local tier_labels = { 'Lowest', 'Medium', 'Highest' }
+                    local tier_values = { 'lowest', 'medium', 'highest' }
+                    local tier_index  = { 1 }  -- default Medium
+                    for i, value in ipairs(tier_values) do
+                        if value == (settings.risk_tier or 'medium') then
+                            tier_index[1] = i - 1
+                            break
+                        end
+                    end
+                    ui.combo(ctx, 'Risk Tier##risk_tier', 'risk_tier', tier_index, tier_labels, function(i)
+                        return tier_values[i + 1]
+                    end)
+                    ui.item_tooltip(tooltips.risk_tier)
+
+                    imgui.Unindent(ui.ABILITY_LIST_INDENT)
                 end
+                ui.end_section(ctx, is_open)
+            end
+
+            -- Buff settings. Rune Fencer's four rune rows ride at the top of this
+            -- section, so it also opens for a job that has runes but no usable buff
+            -- (a RUN main below Barstone, or a low RUN subjob).
+            local rune_list = job_def and job_def.abilities.rune
+            local has_runes = rune_list and has_usable_abilities(rune_list)
+            local has_buffs = job_def and job_def.abilities.buff and has_usable_abilities(job_def.abilities.buff)
+            if has_buffs or has_runes then
+                local is_open, is_enabled = ui.begin_section(ctx, 'Buffs', 'buff_enabled', false, tooltips.buffs)
+                if is_open and is_enabled then
+                    -- Clear temporary group rendering flags
+                    if current_settings then
+                        for key in pairs(current_settings) do
+                            if key:match('^rendered_group_') then
+                                current_settings[key] = nil
+                            end
+                        end
+                    end
                 
-                imgui.Indent(ui.ABILITY_LIST_INDENT)
+                    imgui.Indent(ui.ABILITY_LIST_INDENT)
 
-                -- Runes first: Idle Runes, then one row per rune-reading JA in
-                -- rune.ordered_ja order -- the same list lib/actions/rune.lua
-                -- evaluates, so the rows read top-down in the order they fire. A
-                -- JA row takes the rune slots over as soon as its own recast is
-                -- ready; Idle Runes holds them the rest of the time.
-                if has_runes then
-                    local available_runes = {}
-                    for _, ability in ipairs(rune_list) do
+                    -- Runes first: Idle Runes, then one row per rune-reading JA in
+                    -- rune.ordered_ja order -- the same list lib/actions/rune.lua
+                    -- evaluates, so the rows read top-down in the order they fire. A
+                    -- JA row takes the rune slots over as soon as its own recast is
+                    -- ready; Idle Runes holds them the rest of the time.
+                    if has_runes then
+                        local available_runes = {}
+                        for _, ability in ipairs(rune_list) do
+                            if can_use_ability(ability) and not is_subjob_duplicate(job_def, ability) then
+                                table.insert(available_runes, ability)
+                            end
+                        end
+                        if #available_runes > 0 then
+                            local main_level, sub_level = common.get_player_level()
+                            local max_runes = rune.max_runes(
+                                rune.run_level(available_runes[1], main_level, sub_level))
+
+                            render_rune_row(ctx, 'Idle Runes', 'idle', 'element',
+                                available_runes, max_runes, settings, callback)
+
+                            for _, ja in ipairs(rune.ordered_ja(job_def)) do
+                                if can_use_ability(ja) and not is_subjob_duplicate(job_def, ja) then
+                                    render_rune_row(ctx, ja.name, rune.setting_prefix(ja), ja.rune_field,
+                                        available_runes, max_runes, settings, callback)
+                                end
+                            end
+
+                            -- No divider with nothing under it: a RUN main between 5
+                            -- and 19 has runes but no usable buff yet.
+                            if has_buffs then
+                                imgui.Separator()
+                            end
+                        end
+                    end
+
+                    ctx.show_buff_warning = true
+                    for _, ability in ipairs(job_def.abilities.buff or {}) do
                         if can_use_ability(ability) and not is_subjob_duplicate(job_def, ability) then
-                            table.insert(available_runes, ability)
+                            ui.render_ability(ctx, ability, job_def, 'buff')
+                            render_ammo_count(ability, true)  -- name equipped tier (NIN Sange shuriken)
                         end
                     end
-                    if #available_runes > 0 then
-                        local main_level, sub_level = common.get_player_level()
-                        local max_runes = rune.max_runes(
-                            rune.run_level(available_runes[1], main_level, sub_level))
-
-                        render_rune_row(ctx, 'Idle Runes', 'idle', 'element',
-                            available_runes, max_runes, settings, callback)
-
-                        for _, ja in ipairs(rune.ordered_ja(job_def)) do
-                            if can_use_ability(ja) and not is_subjob_duplicate(job_def, ja) then
-                                render_rune_row(ctx, ja.name, rune.setting_prefix(ja), ja.rune_field,
-                                    available_runes, max_runes, settings, callback)
-                            end
-                        end
-
-                        -- No divider with nothing under it: a RUN main between 5
-                        -- and 19 has runes but no usable buff yet.
-                        if has_buffs then
-                            imgui.Separator()
-                        end
-                    end
+                    ctx.show_buff_warning = false
+                    imgui.Unindent(ui.ABILITY_LIST_INDENT)
                 end
-
-                ctx.show_buff_warning = true
-                for _, ability in ipairs(job_def.abilities.buff or {}) do
-                    if can_use_ability(ability) and not is_subjob_duplicate(job_def, ability) then
-                        ui.render_ability(ctx, ability, job_def, 'buff')
-                        render_ammo_count(ability, true)  -- name equipped tier (NIN Sange shuriken)
-                    end
-                end
-                ctx.show_buff_warning = false
-                imgui.Unindent(ui.ABILITY_LIST_INDENT)
+                ui.end_section(ctx, is_open)
             end
-            ui.end_section(ctx, is_open)
-        end
         
-        -- Geo settings (Geomancer)
-        if job_def and job_def.abilities.geo and has_usable_abilities(job_def.abilities.geo) then
-            local is_open, is_enabled = ui.begin_section(ctx, 'Geo', 'geo_enabled', false, tooltips.geo)
-            if is_open and is_enabled then
-                imgui.Indent(ui.ABILITY_LIST_INDENT)
+            -- Geo settings (Geomancer)
+            if job_def and job_def.abilities.geo and has_usable_abilities(job_def.abilities.geo) then
+                local is_open, is_enabled = ui.begin_section(ctx, 'Geo', 'geo_enabled', false, tooltips.geo)
+                if is_open and is_enabled then
+                    imgui.Indent(ui.ABILITY_LIST_INDENT)
 
-                -- Geo-bt debuff selector (<bt> enemy debuffs): self-grouped
-                -- ON/OFF + dropdown. Cast/luopan lifecycle lives in geo.lua.
-                if current_settings then
-                    current_settings['rendered_group_Geo-bt'] = nil
-                end
-                for _, ability in ipairs(job_def.abilities.geo) do
-                    if ability.group == 'Geo-bt' then
-                        ui.render_ability(ctx, ability, job_def, 'geo')
+                    -- Geo-bt debuff selector (<bt> enemy debuffs): self-grouped
+                    -- ON/OFF + dropdown. Cast/luopan lifecycle lives in geo.lua.
+                    if current_settings then
+                        current_settings['rendered_group_Geo-bt'] = nil
                     end
-                end
-
-                -- Full Circle checkbox, kept directly above its own Distance/Timer
-                -- sliders. Blaze of Glory renders after them (below) rather than in
-                -- this loop, so it can't split Full Circle from its settings.
-                for _, ability in ipairs(job_def.abilities.geo) do
-                    if ability.group == nil and ability.name ~= 'Entrust' and ability.name ~= 'Blaze of Glory'
-                        and can_use_ability(ability) and not is_subjob_duplicate(job_def, ability) then
-                        ui.ability_checkbox(ctx, ability, job_def, 'geo')
-                        ui.item_tooltip(tooltips.geo_full_circle)
-                    end
-                end
-
-                -- Distance threshold (Full Circle recast trigger)
-                ui.slider_int(ctx, 'Distance (yalms)##geo_distance_threshold', 'geo_distance_threshold', { settings.geo_distance_threshold or 10 }, 7, 30)
-                ui.item_tooltip(tooltips.geo_distance)
-
-                -- Grace period after the battle target dies before Full Circle
-                -- dismisses the Geo-bt luopan (lets a fresh <bt> reuse it).
-                -- Geo-bt is Geomancer-only, so only show it there.
-                if job_def.job_id == 21 then
-                    ui.slider_int(ctx, 'Timer (seconds)##geo_bt_timer', 'geo_bt_timer', { settings.geo_bt_timer or 5 }, 1, 20)
-                    ui.item_tooltip(tooltips.geo_bt_timer)
-                end
-
-                -- Blaze of Glory: a precast for the NEXT Geo spell, not part of the
-                -- Full Circle distance logic, so it sits below those sliders.
-                for _, ability in ipairs(job_def.abilities.geo) do
-                    if ability.name == 'Blaze of Glory' and can_use_ability(ability) and not is_subjob_duplicate(job_def, ability) then
-                        ui.ability_checkbox(ctx, ability, job_def, 'geo')
-                        ui.item_tooltip(tooltips.geo_blaze_of_glory)
-                    end
-                end
-
-                -- Entrust settings (only for Geomancer)
-                if job_def.job_id == 21 then
-                    -- Build list of available Indi spells
-                    local available_indi_spells = {}
-                    if job_def.abilities.buff then
-                        for _, ability in ipairs(job_def.abilities.buff) do
-                            if ability.group == 'Indi' and can_use_ability(ability) and common.has_spell_learned(ability) then
-                                table.insert(available_indi_spells, ability)
-                            end
+                    for _, ability in ipairs(job_def.abilities.geo) do
+                        if ability.group == 'Geo-bt' then
+                            ui.render_ability(ctx, ability, job_def, 'geo')
                         end
                     end
-                    
-                    -- Sort by level descending (highest first)
-                    table.sort(available_indi_spells, function(a, b) return a.level > b.level end)
-                    
-                    if #available_indi_spells > 0 then
-                        -- Entrust ability checkbox
-                        for _, ability in ipairs(job_def.abilities.geo) do
-                            if ability.name == 'Entrust' and can_use_ability(ability) and not is_subjob_duplicate(job_def, ability) then
-                                ui.ability_checkbox(ctx, ability, job_def, 'geo')
-                                ui.item_tooltip(tooltips.geo_entrust_enable)
+
+                    -- Full Circle checkbox, kept directly above its own Distance/Timer
+                    -- sliders. Blaze of Glory renders after them (below) rather than in
+                    -- this loop, so it can't split Full Circle from its settings.
+                    for _, ability in ipairs(job_def.abilities.geo) do
+                        if ability.group == nil and ability.name ~= 'Entrust' and ability.name ~= 'Blaze of Glory'
+                            and can_use_ability(ability) and not is_subjob_duplicate(job_def, ability) then
+                            ui.ability_checkbox(ctx, ability, job_def, 'geo')
+                            ui.item_tooltip(tooltips.geo_full_circle)
+                        end
+                    end
+
+                    -- Distance threshold (Full Circle recast trigger)
+                    ui.slider_int(ctx, 'Distance (yalms)##geo_distance_threshold', 'geo_distance_threshold', { settings.geo_distance_threshold or 10 }, 7, 30)
+                    ui.item_tooltip(tooltips.geo_distance)
+
+                    -- Grace period after the battle target dies before Full Circle
+                    -- dismisses the Geo-bt luopan (lets a fresh <bt> reuse it).
+                    -- Geo-bt is Geomancer-only, so only show it there.
+                    if job_def.job_id == 21 then
+                        ui.slider_int(ctx, 'Timer (seconds)##geo_bt_timer', 'geo_bt_timer', { settings.geo_bt_timer or 5 }, 1, 20)
+                        ui.item_tooltip(tooltips.geo_bt_timer)
+                    end
+
+                    -- Blaze of Glory: a precast for the NEXT Geo spell, not part of the
+                    -- Full Circle distance logic, so it sits below those sliders.
+                    for _, ability in ipairs(job_def.abilities.geo) do
+                        if ability.name == 'Blaze of Glory' and can_use_ability(ability) and not is_subjob_duplicate(job_def, ability) then
+                            ui.ability_checkbox(ctx, ability, job_def, 'geo')
+                            ui.item_tooltip(tooltips.geo_blaze_of_glory)
+                        end
+                    end
+
+                    -- Entrust settings (only for Geomancer)
+                    if job_def.job_id == 21 then
+                        -- Build list of available Indi spells
+                        local available_indi_spells = {}
+                        if job_def.abilities.buff then
+                            for _, ability in ipairs(job_def.abilities.buff) do
+                                if ability.group == 'Indi' and can_use_ability(ability) and common.has_spell_learned(ability) then
+                                    table.insert(available_indi_spells, ability)
+                                end
                             end
                         end
+                    
+                        -- Sort by level descending (highest first)
+                        table.sort(available_indi_spells, function(a, b) return a.level > b.level end)
+                    
+                        if #available_indi_spells > 0 then
+                            -- Entrust ability checkbox
+                            for _, ability in ipairs(job_def.abilities.geo) do
+                                if ability.name == 'Entrust' and can_use_ability(ability) and not is_subjob_duplicate(job_def, ability) then
+                                    ui.ability_checkbox(ctx, ability, job_def, 'geo')
+                                    ui.item_tooltip(tooltips.geo_entrust_enable)
+                                end
+                            end
 
-                        -- Entrust Target dropdown
-                        entrust_target_name = render_party_dropdown('Entrust Target', 'entrust_target', false, party_member_names, settings, callback)
-                        ui.item_tooltip(tooltips.geo_entrust_target)
+                            -- Entrust Target dropdown
+                            entrust_target_name = render_party_dropdown('Entrust Target', 'entrust_target', false, party_member_names, settings, callback)
+                            ui.item_tooltip(tooltips.geo_entrust_target)
 
-                        -- Validate saved spell name is in available spells
-                        local current_spell_display = 'None'
-                        if entrust_spell_name then
-                            local found = false
-                            for _, spell in ipairs(available_indi_spells) do
-                                if spell.name == entrust_spell_name then
-                                    current_spell_display = spell.name
-                                    if spell.cost and spell.cost > 0 then
-                                        current_spell_display = current_spell_display .. ' (' .. spell.cost .. ' MP)'
+                            -- Validate saved spell name is in available spells
+                            local current_spell_display = 'None'
+                            if entrust_spell_name then
+                                local found = false
+                                for _, spell in ipairs(available_indi_spells) do
+                                    if spell.name == entrust_spell_name then
+                                        current_spell_display = spell.name
+                                        if spell.cost and spell.cost > 0 then
+                                            current_spell_display = current_spell_display .. ' (' .. spell.cost .. ' MP)'
+                                        end
+                                        found = true
+                                        break
                                     end
-                                    found = true
-                                    break
                                 end
-                            end
-                            if not found then
-                                -- Saved spell not available, reset
-                                entrust_spell_name = nil
-                                settings.entrust_spell = nil
-                                if callback then callback() end
-                            end
-                        end
-                        
-                        -- Entrust Spell dropdown
-                        imgui.PushItemWidth(250)
-                        if ui.begin_opaque_combo('Entrust Spell', current_spell_display) then
-                            -- Add None option
-                            local is_none_selected = (entrust_spell_name == nil)
-                            if imgui.Selectable('None', is_none_selected) then
-                                entrust_spell_name = nil
-                                settings.entrust_spell = nil
-                                if callback then callback() end
-                            end
-                            if is_none_selected then
-                                imgui.SetItemDefaultFocus()
-                            end
-                            
-                            -- Add spell options
-                            for _, spell in ipairs(available_indi_spells) do
-                                local label = spell.name
-                                if spell.cost and spell.cost > 0 then
-                                    label = label .. ' (' .. spell.cost .. ' MP)'
-                                end
-                                local is_selected = (spell.name == entrust_spell_name)
-                                if imgui.Selectable(label, is_selected) then
-                                    entrust_spell_name = spell.name
-                                    settings.entrust_spell = spell.name
+                                if not found then
+                                    -- Saved spell not available, reset
+                                    entrust_spell_name = nil
+                                    settings.entrust_spell = nil
                                     if callback then callback() end
                                 end
-                                if is_selected then
+                            end
+                        
+                            -- Entrust Spell dropdown
+                            imgui.PushItemWidth(250)
+                            if ui.begin_opaque_combo('Entrust Spell', current_spell_display) then
+                                -- Add None option
+                                local is_none_selected = (entrust_spell_name == nil)
+                                if imgui.Selectable('None', is_none_selected) then
+                                    entrust_spell_name = nil
+                                    settings.entrust_spell = nil
+                                    if callback then callback() end
+                                end
+                                if is_none_selected then
                                     imgui.SetItemDefaultFocus()
                                 end
+                            
+                                -- Add spell options
+                                for _, spell in ipairs(available_indi_spells) do
+                                    local label = spell.name
+                                    if spell.cost and spell.cost > 0 then
+                                        label = label .. ' (' .. spell.cost .. ' MP)'
+                                    end
+                                    local is_selected = (spell.name == entrust_spell_name)
+                                    if imgui.Selectable(label, is_selected) then
+                                        entrust_spell_name = spell.name
+                                        settings.entrust_spell = spell.name
+                                        if callback then callback() end
+                                    end
+                                    if is_selected then
+                                        imgui.SetItemDefaultFocus()
+                                    end
+                                end
+                                ui.end_opaque_combo()
                             end
-                            ui.end_opaque_combo()
+                            imgui.PopItemWidth()
+                            ui.item_tooltip(tooltips.geo_entrust_spell)
                         end
-                        imgui.PopItemWidth()
-                        ui.item_tooltip(tooltips.geo_entrust_spell)
                     end
+                    imgui.Unindent(ui.ABILITY_LIST_INDENT)
                 end
-                imgui.Unindent(ui.ABILITY_LIST_INDENT)
+                ui.end_section(ctx, is_open)
             end
-            ui.end_section(ctx, is_open)
-        end
 
-        -- Revive settings
-        if job_def and job_def.abilities.revive and has_usable_abilities(job_def.abilities.revive) then
-            local is_open, is_enabled = ui.begin_section(ctx, 'Revive', 'revive_enabled', false, tooltips.revive)
-            if is_open and is_enabled then
-                imgui.Indent(ui.ABILITY_LIST_INDENT)
-                for _, ability in ipairs(job_def.abilities.revive) do
-                    if can_use_ability(ability) and not is_subjob_duplicate(job_def, ability) then
-                        ui.ability_checkbox(ctx, ability, job_def, 'revive', true)
+            -- Revive settings
+            if job_def and job_def.abilities.revive and has_usable_abilities(job_def.abilities.revive) then
+                local is_open, is_enabled = ui.begin_section(ctx, 'Revive', 'revive_enabled', false, tooltips.revive)
+                if is_open and is_enabled then
+                    imgui.Indent(ui.ABILITY_LIST_INDENT)
+                    for _, ability in ipairs(job_def.abilities.revive) do
+                        if can_use_ability(ability) and not is_subjob_duplicate(job_def, ability) then
+                            ui.ability_checkbox(ctx, ability, job_def, 'revive', true)
+                        end
                     end
+                    imgui.Unindent(ui.ABILITY_LIST_INDENT)
                 end
-                imgui.Unindent(ui.ABILITY_LIST_INDENT)
+                ui.end_section(ctx, is_open)
             end
-            ui.end_section(ctx, is_open)
+            end  -- End of job_def check
+
+            ui.end_sections(ctx)
+
+            -- Right-click on empty body space opens the window-sizing menu. Submitted last:
+            -- it must sit OUTSIDE the section run (ImGui allows nothing but tab items between
+            -- begin_sections and end_sections), and by here every item for the frame has been
+            -- submitted, so NoOpenOverItems has the full hover picture to test against.
+            ui.render_window_size_menu(ctx)
+        end)
+        if not body_ok then
+            ui.abort_sections()
+            -- The same broken frame repeats at frame rate, so only the first of a
+            -- run of identical errors is printed -- otherwise the log scrolls away
+            -- the very message it is reporting.
+            local message = tostring(body_err)
+            if message ~= last_render_error then
+                last_render_error = message
+                common.errorf('Config UI render error: %s', message)
+            end
+        else
+            last_render_error = nil
         end
-        end  -- End of job_def check
-
-        ui.end_sections(ctx)
-
-        -- Right-click on empty body space opens the window-sizing menu. Submitted last:
-        -- it must sit OUTSIDE the section run (ImGui allows nothing but tab items between
-        -- begin_sections and end_sections), and by here every item for the frame has been
-        -- submitted, so NoOpenOverItems has the full hover picture to test against.
-        ui.render_window_size_menu(ctx)
     end
     imgui.End()
     imgui.PopStyleVar()

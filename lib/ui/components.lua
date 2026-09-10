@@ -2194,6 +2194,12 @@ end
 -- begin_section, drained by end_sections. See "Section Display".
 local deferred_tabs = {}
 
+-- What tab chrome this frame currently has open, so abort_sections can close it
+-- again after a Lua error skipped the matching end_* call. Both stay false in
+-- header mode, which opens nothing that needs unwinding.
+local tab_bar_open = false
+local tab_item_open = false
+
 -- Show a static help tooltip for the most recently rendered item.
 function ui_components.item_tooltip(text)
     if text and imgui.IsItemHovered() then
@@ -2371,6 +2377,8 @@ local function begin_tab_section(ctx, label, setting_name, default_value, toolti
     local selected = imgui.BeginTabItem(
         label .. '###' .. setting_name .. (enabled and '' or '_off'), nil, flags)
 
+    tab_item_open = selected
+
     if selected then
         -- The request landed; stop re-submitting it so the next click can move on.
         if reselect_id == setting_name then
@@ -2417,6 +2425,8 @@ end
 -- began in.
 function ui_components.begin_sections(ctx)
     deferred_tabs = {}
+    tab_bar_open = false
+    tab_item_open = false
 
     -- Give up on a selection request the target never came back to claim.
     if reselect_id then
@@ -2445,6 +2455,7 @@ function ui_components.begin_sections(ctx)
         end
         if imgui.BeginTabBar('##sk_sections', bar_flags) then
             ctx.section_mode = 'tabs'
+            tab_bar_open = true
             return
         end
         -- BeginTabBar refused (the window is clipped). Fall back to headers for
@@ -2466,9 +2477,28 @@ function ui_components.end_sections(ctx)
                 ctx, tab.label, tab.setting_name, tab.default_value, tab.tooltip)
             if selected then
                 imgui.EndTabItem()
+                tab_item_open = false
             end
         end
         imgui.EndTabBar()
+        tab_bar_open = false
+    end
+end
+
+-- Close whatever tab chrome is still open, for a caller recovering from a Lua
+-- error thrown mid-frame: the end_section / end_sections calls that would have
+-- balanced BeginTabItem and BeginTabBar were skipped with the stack unwound, and
+-- ImGui asserts on that rather than tolerating it. A no-op in header mode, and
+-- safe to call when the run had already finished cleanly. Takes no ctx: every
+-- flag it clears is module state, and the frame's ctx is discarded either way.
+function ui_components.abort_sections()
+    if tab_item_open then
+        imgui.EndTabItem()
+        tab_item_open = false
+    end
+    if tab_bar_open then
+        imgui.EndTabBar()
+        tab_bar_open = false
     end
 end
 
@@ -2494,6 +2524,7 @@ end
 function ui_components.end_section(ctx, is_open)
     if ctx.section_mode == 'tabs' and is_open then
         imgui.EndTabItem()
+        tab_item_open = false
     end
 end
 
