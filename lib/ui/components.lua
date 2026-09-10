@@ -2190,37 +2190,12 @@ function ui_components.set_tooltip(text)
     end
 end
 
--- Sections held back for the disabled end of the tab bar, and the entry the next
--- item_tooltip belongs to. Filled by begin_section, drained by end_sections --
--- declared up here because item_tooltip below reads them. See "Section Display".
+-- Sections held back for the disabled end of the tab bar. Filled by
+-- begin_section, drained by end_sections. See "Section Display".
 local deferred_tabs = {}
-local deferred_tooltip_target = nil
-
--- Whether the tab begin_tab_section just submitted is hovered. Sampled there
--- because the enable checkbox and separator it draws afterwards would otherwise
--- be the "last item" the caller's item_tooltip tests. nil outside tab mode.
-local tab_hovered = nil
 
 -- Show a static help tooltip for the most recently rendered item.
 function ui_components.item_tooltip(text)
-    -- A deferred section has submitted no item yet, so IsItemHovered would test
-    -- whatever was rendered before it -- usually the previous tab. Its help rides
-    -- along with the tab instead and is shown when end_sections submits it.
-    if deferred_tooltip_target then
-        deferred_tooltip_target.tooltip = text
-        deferred_tooltip_target = nil
-        return
-    end
-    -- A tab's help belongs to the tab, not to the widgets begin_tab_section drew
-    -- inside it, so it rides the hover sampled there instead of IsItemHovered.
-    if tab_hovered ~= nil then
-        local hovered = tab_hovered
-        tab_hovered = nil
-        if text and hovered then
-            ui_components.set_tooltip(text)
-        end
-        return
-    end
     if text and imgui.IsItemHovered() then
         ui_components.set_tooltip(text)
     end
@@ -2245,7 +2220,7 @@ end
 -- shape either way:
 --
 --     ui.begin_sections(ctx)
---       local is_open, is_enabled = ui.begin_section(ctx, 'Buffs', 'buff_enabled', false)
+--       local is_open, is_enabled = ui.begin_section(ctx, 'Buffs', 'buff_enabled', false, tooltips.buffs)
 --       if is_open and is_enabled then ... end
 --       ui.end_section(ctx, is_open)
 --       ... 15 more ...
@@ -2339,7 +2314,7 @@ local function render_display_mode_menu(ctx, setting_name)
     end
 end
 
-local function begin_header_section(ctx, label, setting_name, default_value)
+local function begin_header_section(ctx, label, setting_name, default_value, tooltip)
     local setting_var = { section_enabled(ctx, setting_name, default_value) }
     local previous_value = setting_var[1]
     if imgui.Checkbox('##' .. setting_name, setting_var) then
@@ -2355,11 +2330,12 @@ local function begin_header_section(ctx, label, setting_name, default_value)
     imgui.PushStyleColor(ImGuiCol_HeaderActive, HEADER_COLOR_ACTIVE)
     local is_open = imgui.CollapsingHeader(label, ImGuiTreeNodeFlags_DefaultOpen)
     imgui.PopStyleColor(3)
+    ui_components.item_tooltip(tooltip)
     render_display_mode_menu(ctx, setting_name)
     return is_open, setting_var[1]
 end
 
-local function begin_tab_section(ctx, label, setting_name, default_value)
+local function begin_tab_section(ctx, label, setting_name, default_value, tooltip)
     local enabled = section_enabled(ctx, setting_name, default_value)
 
     if not enabled then
@@ -2394,7 +2370,6 @@ local function begin_tab_section(ctx, label, setting_name, default_value)
     end
     local selected = imgui.BeginTabItem(
         label .. '###' .. setting_name .. (enabled and '' or '_off'), nil, flags)
-    tab_hovered = imgui.IsItemHovered()
 
     if selected then
         -- The request landed; stop re-submitting it so the next click can move on.
@@ -2411,6 +2386,11 @@ local function begin_tab_section(ctx, label, setting_name, default_value)
     if not enabled then
         imgui.PopStyleColor(6)
     end
+
+    -- The tab is still the last item -- nothing above submits one -- so the help
+    -- attaches to it and not to the checkbox and separator drawn into the body
+    -- below. It goes after the pop so a disabled tab's dimming misses the tooltip.
+    ui_components.item_tooltip(tooltip)
 
     render_display_mode_menu(ctx, setting_name)
 
@@ -2482,8 +2462,8 @@ function ui_components.end_sections(ctx)
     if ctx.section_mode == 'tabs' then
         -- The disabled sections, in declaration order, after every enabled one.
         for _, tab in ipairs(deferred_tabs) do
-            local selected = begin_tab_section(ctx, tab.label, tab.setting_name, tab.default_value)
-            ui_components.item_tooltip(tab.tooltip)
+            local selected = begin_tab_section(
+                ctx, tab.label, tab.setting_name, tab.default_value, tab.tooltip)
             if selected then
                 imgui.EndTabItem()
             end
@@ -2492,12 +2472,9 @@ function ui_components.end_sections(ctx)
     end
 end
 
-function ui_components.begin_section(ctx, label, setting_name, default_value)
-    deferred_tooltip_target = nil
-    tab_hovered = nil
-
+function ui_components.begin_section(ctx, label, setting_name, default_value, tooltip)
     if ctx.section_mode ~= 'tabs' then
-        return begin_header_section(ctx, label, setting_name, default_value)
+        return begin_header_section(ctx, label, setting_name, default_value, tooltip)
     end
 
     -- Disabled sections are held back for end_sections, so the bar reads enabled
@@ -2505,19 +2482,16 @@ function ui_components.begin_section(ctx, label, setting_name, default_value)
     -- site gates its body on is_enabled, so a disabled tab's entire body is the
     -- enable checkbox begin_tab_section draws itself.
     if not section_enabled(ctx, setting_name, default_value) then
-        deferred_tabs[#deferred_tabs + 1] =
-            { label = label, setting_name = setting_name, default_value = default_value }
-        deferred_tooltip_target = deferred_tabs[#deferred_tabs]
+        deferred_tabs[#deferred_tabs + 1] = { label = label, setting_name = setting_name,
+            default_value = default_value, tooltip = tooltip }
         return false, false
     end
 
-    return begin_tab_section(ctx, label, setting_name, default_value)
+    return begin_tab_section(ctx, label, setting_name, default_value, tooltip)
 end
 
 -- EndTabItem is called only when BeginTabItem returned true, per ImGui's rules.
 function ui_components.end_section(ctx, is_open)
-    deferred_tooltip_target = nil
-    tab_hovered = nil
     if ctx.section_mode == 'tabs' and is_open then
         imgui.EndTabItem()
     end
